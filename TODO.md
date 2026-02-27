@@ -1,0 +1,10 @@
+- moretea personalization
+- ROS2 tool integration
+- tour guide tool
+-- contingency plan if fail to reach one of the tourism spots
+-- everytime theres a detour, or replan, LLM should voice out to make the users informed.
+- test with robot
+- wake word detection and idle after 5s if nobody talks to it
+- Integrate with RESpeaker
+- add logs
+- FAQ in garage
