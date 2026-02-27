@@ -1,0 +1,3 @@
+[submodule "agent-starter-python"]
+	path = agent-starter-python
+	url = https://github.com/Frentzen001/agent-starter-python.git
