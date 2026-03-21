@@ -1,0 +1,106 @@
+1. Executive Summary
+
+    Project Name: MoreTea - A Pet Robot Assistant for Garage@EEE
+
+    Version: [1.4]
+
+    Status: Active Implementation
+
+    The "One-Liner": A socially aware pet robot assistant that can sleep, wake, converse, guide tours, answer Garage@EEE questions, physically navigate indoor spaces safely, and switch between hosted LiveKit models and a laptop-hosted voice stack based on Ollama and OpenAI-compatible speech services.
+
+2. The "Why" (Problem & Opportunity)
+
+    Problem Statement: Garage@EEE is a student makerspace where many new users need repeated orientation, help finding resources, and answers to common process questions. Relying only on committee members does not scale and creates repetitive work.
+
+    Target Audience: Students, visitors, and newcomers who want to understand Garage@EEE quickly and start building immediately.
+
+    Value Proposition: Reduce repetitive onboarding effort, provide a memorable robot experience, and make the space easier to approach through a conversational assistant.
+
+3. Goals & Success Metrics
+
+    Primary Goal: MoreTea can wake on cue, answer Garage@EEE questions accurately, guide a user through a multi-stop tour, recover safely from robot navigation issues, and remain understandable to future developers.
+
+    Success Metrics:
+    - Can answer common Garage@EEE questions without obvious hallucinations.
+    - Can run a full tour using configured stops and recover gracefully from failed stops.
+    - Can stay asleep when not engaged and wake when addressed by name.
+    - Can degrade into a stationary concierge when robot navigation is unavailable.
+    - Can start with either hosted LiveKit inference or a self-hosted local STT-LLM-TTS stack through configuration only.
+    - Can be extended by future developers without rebuilding the architecture from scratch.
+
+4. Functional Requirements (User Stories)
+
+ID	Feature	Priority	Description
+FR-1	Autonomous Navigation	P0	Ability to navigate Garage@EEE stops with ROS 2 and Nav2.
+FR-2	Tour Guiding	P0	Guide users through a multi-stop Garage tour with resumable progress.
+FR-3	Garage QnA	P0	Answer follow-up questions about Garage@EEE, facilities, and programmes.
+FR-4	Wake / Sleep Interaction	P1	Remain idle until addressed, then return to sleep after inactivity.
+FR-5	Embodied Behaviour	P1	Use eyes and concise social behaviours to feel like a pet robot assistant.
+FR-6	Failure Transparency	P1	Inform users when the robot pauses, replans, skips a stop, or cannot move.
+FR-7	Personalisation	P2	Remember lightweight session facts such as user name or preferences.
+FR-8	Degraded Operation	P1	Remain useful as a stationary concierge if ROS or Nav2 are unavailable.
+FR-9	Startup Health Reporting	P1	Validate content and runtime readiness at startup and expose a structured health report.
+FR-10	Configurable Model Stack	P1	Select between hosted LiveKit inference and self-hosted local STT, LLM, and TTS services through environment configuration.
+FR-11	Hosted Fallback	P1	Fall back to hosted LiveKit models when local model services are unavailable and fallback is enabled.
+FR-12	Documented Local Stack	P1	Provide a concrete, developer-friendly local setup path for the recommended Ollama plus Speaches stack.
+
+5. Technical Constraints & Non-Functional Requirements
+
+    Tech Stack: Python, LiveKit Agents, ROS 2 Humble, Nav2
+
+    Architecture: Modular runtime, domain, service, and content split so future developers can extend the system safely.
+
+    Knowledge Strategy: Garage@EEE knowledge remains prompt-injected at startup because the token footprint is small and low latency is preferred.
+
+    Safety: Motion and degraded-mode decisions must be deterministic and not delegated purely to the LLM.
+
+    Inference Strategy: The voice pipeline must support both cloud-backed and self-hosted STT-LLM-TTS providers, with local health checks before session startup.
+
+    Interoperability: The system should remain evolvable toward a REST or API surface in a future milestone.
+
+    Hardware Assumption: RESpeaker is used as a standard microphone only; wake behaviour is implemented in software at the agent runtime layer.
+
+    Local Hardware Assumption: Development target for self-hosted inference is a laptop-class NVIDIA RTX 4060 GPU, prioritising low latency over maximum model size.
+
+6. User Experience (UX) & Flow
+
+    a. A user sees MoreTea idle in Garage@EEE.
+    b. The user says "Hey MoreTea" or another configured wake phrase.
+    c. MoreTea transitions from sleeping to attentive, greets the user, and answers initial questions or offers a tour.
+    d. If the user starts a tour, MoreTea guides them stop by stop, narrates what each area is for, and reports any pauses or detours.
+    e. The user can interrupt with follow-up questions, ask to go somewhere specific, or stop the robot.
+    f. If navigation is unavailable, MoreTea remains a stationary concierge and explains that movement is disabled.
+    g. If local model mode is enabled, MoreTea probes the local STT, LLM, and TTS services before startup and either uses them or falls back to hosted inference if configured.
+    h. After inactivity, MoreTea returns to sleep and waits for the next interaction.
+
+7. Implementation Notes
+
+    Current implementation is organized into:
+    - runtime session orchestration with startup health reporting and model-stack selection
+    - agent classes for concierge and tour roles
+    - domain state machines for interaction, safety, and tour state
+    - services for navigation, engagement, affect, knowledge, telemetry, and memory
+    - YAML-driven content for stops, FAQs, policies, and persona
+    - environment-driven model configuration for local or hosted STT, LLM, and TTS
+
+    Current delivery status:
+    - the architectural refactor is complete
+    - the software-first milestone is complete
+    - startup health reporting, manual always-awake mode, and session memory are implemented
+    - local self-hosted model configuration with hosted fallback is implemented
+    - a concrete Ollama plus Speaches setup path is documented
+    - hardware validation and real waypoint calibration remain the main open work
+
+8. Milestones & Timeline
+
+    Milestone 1: Architectural refactor to layered runtime, domain, service, and content model. Completed.
+
+    Milestone 2: Stable navigation, retry or skip logic, and structured content configuration. In progress.
+
+    Milestone 3: Sleep and wake interaction, affect mapping, and richer Garage assistant behaviour. In progress.
+
+    Milestone 4: Self-hosted local model configuration and fallback path. Completed.
+
+    Milestone 5: Concrete local setup documentation for Ollama plus Speaches. Completed.
+
+    Milestone 6: Robot validation, latency tuning, and deployment hardening. Pending.
