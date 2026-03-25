@@ -1,0 +1,61 @@
+name: moretea_robot
+root: /home/frentzen/FYP
+startup_window: bringup
+windows:
+  - precheck:
+      panes:
+        - >-
+          bash -lc 'echo "Manual precheck: make sure Tailscale is connected if you need online access.";
+          echo "Suggested check: tailscale status";
+          command -v tailscale >/dev/null 2>&1 && tailscale status || echo "tailscale not found in PATH";
+          echo;
+          echo "If MCP port 8765 is busy on relaunch:";
+          echo "  pkill -f moretea_robot_mcp.server || true";
+          echo;
+          exec bash'
+  - bringup:
+      panes:
+        - >-
+          bash -lc 'source /opt/ros/humble/setup.bash &&
+          ros2 launch linorobot2_bringup bringup.launch.py
+          base_serial_port:=/dev/ttyESP32_motor
+          micro_ros_baudrate:=115200'
+  - head_agent:
+      panes:
+        - >-
+          bash -lc 'source /opt/ros/humble/setup.bash &&
+          ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyESP32_head -b 115200'
+  - face_tracker:
+      panes:
+        - >-
+          bash -lc 'source /opt/ros/humble/setup.bash &&
+          cd "$HOME/Tinkering-Project-More-Tea/ros2_ws/src/head_pubsub" &&
+          source venv/bin/activate &&
+          python head_pubsub/face_tracker_node.py'
+  - arm:
+      panes:
+        - >-
+          bash -lc 'source /opt/ros/humble/setup.bash &&
+          ros2 run moretea_arm play_trajectory_server'
+  - online_access:
+      panes:
+        - >-
+          bash -lc 'cd "$HOME/Tinkering-Project-More-Tea/online_access" &&
+          source venv/bin/activate &&
+          python server.py'
+  - navigation:
+      panes:
+        - >-
+          bash -lc 'source /opt/ros/humble/setup.bash &&
+          ros2 launch linorobot2_navigation navigation.launch.py'
+  - robot_mcp:
+      panes:
+        - >-
+          bash -lc 'sleep 5 &&
+          cd /home/frentzen/FYP/moretea-robot-mcp &&
+          ./scripts/run_robot_mcp.sh'
+  - eye_watch:
+      panes:
+        - >-
+          bash -lc 'cd /home/frentzen/FYP/moretea-robot-mcp &&
+          ./scripts/watch_eye_expression.sh'

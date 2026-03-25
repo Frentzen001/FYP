@@ -1,0 +1,44 @@
+name: moretea_voice
+root: /home/frentzen/FYP
+startup_window: tunnel
+windows:
+  - precheck:
+      panes:
+        - >-
+          bash -lc 'echo "Before starting the voice stack, export ROBOT_USER and ROBOT_HOST.";
+          echo "Example:";
+          echo "  export ROBOT_USER=<robot-user>";
+          echo "  export ROBOT_HOST=<robot-ip>";
+          echo;
+          echo "Robot stack should already be up before this profile starts.";
+          echo "First MCP check after launch: health";
+          echo;
+          exec bash'
+  - tunnel:
+      panes:
+        - >-
+          bash -lc 'cd /home/frentzen/FYP/moretea-robot-mcp &&
+          ./scripts/openclaw_tunnel.sh'
+  - speaches:
+      panes:
+        - >-
+          bash -lc 'cd /home/frentzen/FYP/agent-starter-python &&
+          ./scripts/run_speaches.sh;
+          exec bash'
+  - barebone:
+      panes:
+        - >-
+          bash -lc 'cd /home/frentzen/FYP/agent-starter-python &&
+          ./scripts/run_openclaw_barebone.sh'
+  - checks:
+      panes:
+        - >-
+          bash -lc 'echo "Tunnel check:";
+          echo "  curl -i -H '\''Accept: text/event-stream'\'' http://127.0.0.1:8765/mcp";
+          echo;
+          echo "Speaches check:";
+          echo "  curl http://127.0.0.1:8000/v1/models";
+          echo;
+          echo "First MCP tool to call: health";
+          echo;
+          exec bash'
