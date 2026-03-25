@@ -1,52 +1,66 @@
-# MoreTea FYP
+# MoreTea Workspace
 
-MoreTea is a pet robot assistant for Garage@EEE. The project combines LiveKit Agents, ROS 2, and Nav2 to provide Garage QnA, guided tours, wake and sleep interaction, and embodied robot behaviour.
+MoreTea is a Garage@EEE companion robot built around:
 
-## What This Repo Contains
-- `PRD`: product scope, target behaviour, architecture direction, and functional requirements.
-- `PROGRESS.md`: current implementation status, completed refactor work, and verification history.
-- `TODO.md`: active engineering backlog after the latest software-first milestone.
-- `agent-starter-python/`: the working application repo.
+- OpenClaw for reasoning, memory, and tool selection
+- robot-side MCP servers for embodied capabilities
+- ROS 2 Humble + Nav2 on the robot PC
+- LiveKit as the current voice transport into OpenClaw
 
-## Current Architecture Snapshot
-- `agent-starter-python/src/main.py`: primary LiveKit worker entrypoint.
-- `agent-starter-python/src/agent.py`: compatibility entrypoint preserved for existing commands.
-- `agent-starter-python/src/agent/`: `base_agent.py`, `concierge_agent.py`, `tour_agent.py`.
-- `agent-starter-python/src/runtime/`: session orchestration, startup health checks, and dependency wiring.
-- `agent-starter-python/src/domain/`: interaction, safety, and tour state machines.
-- `agent-starter-python/src/services/`: navigation, knowledge, engagement, affect, memory, and telemetry services.
-- `agent-starter-python/src/content/`: YAML content for persona, policies, FAQs, and tour stops.
-- `agent-starter-python/src/ros2_connector.py`: ROS 2 and Nav2 connector with compatibility preserved for existing tests.
+This repository root is the developer entrypoint for the workspace. It is intentionally short and link-driven.
 
-## Current Status
-The repo is past the architectural refactor stage and through the planned software-first milestone.
+## Active Repos
 
-Implemented now:
-- startup health checks and structured startup telemetry
-- early degraded stationary-concierge mode when navigation is unavailable
-- manual always-awake runtime flag via `MORETEA_ALWAYS_AWAKE`
-- session memory capture for explicit user names and high-level interaction preference
-- memory-aware instruction assembly and prompt-budget checks
-- expanded Garage FAQ content and richer tour-stop narration
-- configurable local STT, LLM, and TTS selection with hosted fallback
-- documented `Ollama + Speaches` local setup path in `agent-starter-python/README.md`
-- updated unit coverage for runtime and prompt behaviour
-- updated `tests/test_agent.py` for the Concierge and Tour flow
+- [agent-starter-python](/home/frentzen/FYP/agent-starter-python/README.md)
+  Voice-side runtime, LiveKit integration, OpenClaw bridge, local model setup.
+- [moretea-robot-mcp](/home/frentzen/FYP/moretea-robot-mcp/README.md)
+  Robot-side MCP tools, ROS-facing execution, launch runbook, feature extension guide.
+- [tmuxinator](/home/frentzen/FYP/tmuxinator/README.md)
+  Current development launcher for the robot PC and OpenClaw PC.
 
-Still pending:
-- real Garage waypoint calibration in `tour_stops.yaml`
-- hardware validation of Nav2 outcomes, recovery events, and wake behaviour
-- successful rerun of cloud-backed `tests/test_agent.py` once LiveKit model quota is available
-- TTS tuning and additional polish on robot character behaviour
+Archived or reference-only repos:
 
-## Verification Snapshot
-Verified in this pass:
-- `uv run python -m compileall src`
-- `uv run python -m pytest tests/test_tour_domain.py tests/test_engagement_service.py tests/test_navigation_service.py tests/test_session_runtime.py tests/test_knowledge_service.py -v`
-- `uv run python -m pytest tests/test_ros2_connector.py -v`
+- [moretea-spine](/home/frentzen/FYP/moretea-spine/README.md)
+- `rosclaw/`
 
-Updated but not fully verified end-to-end:
-- `tests/test_agent.py`
-  Current environment hit LiveKit gateway token-credit quota during execution, so the eval file was updated but not fully validated.
+## Canonical Docs
 
-For setup, run commands, and developer notes, use `agent-starter-python/README.md`.
+- [PRD.md](/home/frentzen/FYP/PRD.md)
+  Product goals, architecture, ownership boundaries, functional requirements.
+- [PROGRESS.md](/home/frentzen/FYP/PROGRESS.md)
+  Current verified state, recent milestones, known gaps, next milestone.
+- [TODO.md](/home/frentzen/FYP/TODO.md)
+  Active engineering backlog.
+- [RUNBOOK.md](/home/frentzen/FYP/RUNBOOK.md)
+  Canonical operator launch, verification, and troubleshooting guide.
+- [AGENTS.md](/home/frentzen/FYP/AGENTS.md)
+  Cross-repo coding-agent guide for this workspace.
+
+Repo-specific docs:
+
+- [agent-starter-python/README.md](/home/frentzen/FYP/agent-starter-python/README.md)
+- [agent-starter-python/AGENTS.md](/home/frentzen/FYP/agent-starter-python/AGENTS.md)
+- [RUNBOOK.md](/home/frentzen/FYP/RUNBOOK.md)
+- [moretea-robot-mcp/docs/ADDING_FEATURES.md](/home/frentzen/FYP/moretea-robot-mcp/docs/ADDING_FEATURES.md)
+- [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md)
+
+## Start Here
+
+If you are new to the workspace:
+
+1. Read [PRD.md](/home/frentzen/FYP/PRD.md) for the architecture and ownership model.
+2. Read [PROGRESS.md](/home/frentzen/FYP/PROGRESS.md) for what is actually working today.
+3. Install the dev launchers from [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md).
+4. Use the repo-specific docs depending on what you are touching:
+   - voice/runtime work: [agent-starter-python/README.md](/home/frentzen/FYP/agent-starter-python/README.md)
+   - robot/MCP work: [moretea-robot-mcp/README.md](/home/frentzen/FYP/moretea-robot-mcp/README.md)
+   - operator launch/debug: [RUNBOOK.md](/home/frentzen/FYP/RUNBOOK.md)
+
+## Current Development Launch
+
+The preferred dev workflow is tmuxinator:
+
+- robot PC: `tmuxinator start moretea_robot`
+- OpenClaw PC: `tmuxinator start moretea_voice`
+
+See [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md) for install and usage.

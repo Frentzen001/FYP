@@ -1,32 +1,34 @@
 # MoreTea Engineering Backlog
 
 ## High Priority
-- [ ] Run the documented `Ollama + Speaches` setup end to end on the RTX 4060 laptop.
-- [ ] Verify `LOCAL_LLM_HEALTH_URL` and `LOCAL_STT_HEALTH_URL`/`LOCAL_TTS_HEALTH_URL` pass before startup.
-- [ ] Measure RTX 4060 local voice latency for first transcript, first token, first audio, and end-to-end turn time.
-- [ ] Validate and replace placeholder coordinates in `agent-starter-python/src/content/tour_stops.yaml` using the real Garage@EEE map.
-- [ ] Run physical robot tests for `NavigationService` and `TourDomain` with Nav2 active.
-- [ ] Validate recovery and replan announcements on real robot feedback and tune the wording if the signals are noisy.
-- [ ] Rerun `agent-starter-python/tests/test_agent.py` successfully using the selected working model path.
+- [ ] Configure a dedicated `moretea` OpenClaw agent instead of using `main`.
+- [ ] Keep delegated OpenClaw mode as the primary production control path.
+- [ ] Replace the simulated executor in `moretea-spine/src/moretea_spine/sim/rosclaw.py` with a real ROSClaw Mode B adapter over rosbridge.
+- [ ] Stand up rosbridge on the Jetson and verify the RTX desktop can reach it over the same Wi-Fi.
+- [ ] Run the first end-to-end delegated smoke test: body turn -> OpenClaw -> ROSClaw -> rosbridge -> robot or simulator.
+- [ ] Define the initial `SOUL.md` for the dedicated MoreTea agent.
+- [ ] Decide how MoreTea persistent memory should be stored and summarized behind the dedicated OpenClaw agent.
 
 ## Medium Priority
-- [ ] Decide whether the final local STT model should stay on `Systran/faster-distil-whisper-small.en` or move to a larger Whisper variant after latency testing.
-- [ ] Tune the TTS voice for the pet robot character after the local service path is stable.
-- [ ] Add startup health checks for robot-side readiness beyond import/runtime availability if more hardware signals become available.
-- [ ] Extend memory beyond the current session if persistent user context becomes a real product need.
-- [ ] Add a manual operator command for clearing degraded state during demos if needed.
+- [ ] Connect the new `moretea-spine` body runtime to real LiveKit microphone input instead of transcript-only harness input.
+- [ ] Add a real Redis backend implementation alongside the in-memory mirror used by the current tests.
+- [ ] Add explicit action-state reconciliation from OpenClaw or ROSClaw back into the body runtime in delegated mode.
+- [ ] Add delegated-mode gateway smoke tests that fail clearly when auth, agent routing, or endpoint config is wrong.
+- [ ] Enable `/v1/responses` only if you still want real-gateway client-tool simulation or contract testing.
+- [ ] Validate barge-in latency with real speech, local TTS, and real ROS action cancellation.
+- [ ] Define landmark-to-pose mapping from the real Garage@EEE map for `move_to_landmark(name)`.
+- [ ] Validate emotion and arm-pose commands against the actual robot hardware interfaces.
 
 ## Lower Priority
-- [ ] Add an operator dashboard for robot mode, current stop, and health state.
-- [ ] Add a REST or API surface after runtime contracts stabilise.
-- [ ] Explore richer multi-agent workflows after the current single runtime plus tour handoff is proven on hardware.
-- [ ] Explore vision-based person awareness after the voice-first assistant is stable.
+- [ ] Add an operator dashboard for robot mode, current action, fallback status, and gateway connectivity.
+- [ ] Add richer VLM or sensor snapshot flows once the core voice-action loop is stable.
+- [ ] Explore student skill and CI workflows after the ROSClaw transport path is proven on hardware.
+- [ ] Revisit whether any functionality from `agent-starter-python` should be migrated into `moretea-spine` after the new control path stabilizes.
 
-## Done In The Latest Pass
-- [x] Added environment-driven local versus hosted model stack selection.
-- [x] Added local model service health checks before session startup.
-- [x] Added hosted fallback for local model startup failures.
-- [x] Added `.env.example` entries for local model URLs, model IDs, health checks, and fallback settings.
-- [x] Added `tests/test_model_config.py` to cover local model config and fallback behaviour.
-- [x] Documented a concrete `Ollama + Speaches` local setup path in the project README.
-- [x] Updated README, PRD, progress, and backlog docs to reflect the local self-hosted inference path.
+## Done Recently
+- [x] Created the new `moretea-spine` codebase for the distributed robot spine.
+- [x] Cloned the upstream ROSClaw repository into the workspace.
+- [x] Added the body runtime with interrupt handling and local fallback mode.
+- [x] Added delegated OpenClaw mode so production control stays inside OpenClaw and ROSClaw.
+- [x] Kept client-tool mode only as a simulation and contract-testing path.
+- [x] Added explicit agent targeting and clearer gateway compatibility errors.

@@ -1,103 +1,86 @@
-# FYP Progress Report - MoreTea Pet Robot Assistant
+# MoreTea Progress
 
-**Project:** MoreTea - Garage@EEE Pet Robot Assistant  
-**Stack:** LiveKit Agents (Python), ROS 2 Humble, Nav2  
-**Last updated:** 22 March 2026 (rev 7)
+**Last updated:** 25 March 2026  
+**Current stack:** OpenClaw, native MCP client, robot-side MCP servers, LiveKit voice runtime, ROS 2 Humble
 
-## Overview
-The project has moved from a monolithic voice-tour prototype to a layered robot assistant architecture. This revision adds configurable self-hosted STT, LLM, and TTS support for an RTX 4060 laptop workflow while preserving the existing hosted LiveKit inference path as a fallback. The documented starter stack is now `Ollama` for LLM plus `Speaches` for STT and TTS.
+## Current Verified State
 
-## Architecture In Repo
+### Architecture
 
-```text
-src/
-  main.py
-  agent.py
-  agent/
-    __init__.py
-    base_agent.py
-    concierge_agent.py
-    tour_agent.py
-  runtime/
-    model_config.py
-    session_runtime.py
-  domain/
-    interaction_domain.py
-    safety_domain.py
-    tour_domain.py
-  services/
-    navigation_service.py
-    knowledge_service.py
-    engagement_service.py
-    affect_service.py
-    memory_service.py
-    telemetry_service.py
-  integrations/
-    ros2_connector.py
-  content/
-    robot_persona.yaml
-    garage_policies.yaml
-    garage_faq.yaml
-    tour_stops.yaml
-  knowledge.py
-  ros2_connector.py
-```
+- OpenClaw is the intended cognitive core.
+- Robot-side MCP servers are the current execution boundary.
+- `agent-starter-python` is the active voice/runtime repo.
+- `moretea-robot-mcp` is the active robot/runtime repo.
+- `moretea-spine` is archived and not part of the current runtime.
 
-Compatibility intentionally preserved:
-- `src/agent.py` still works for existing taskfile, Docker, and README commands.
-- `import agent` and `from agent import Assistant` still work.
-- `import ros2_connector` still works for the older ROS2 test surface.
+### Robot MCP
 
-## Completed In Rev 7
+Verified in the current robot MCP path:
 
-### 1. Configurable local model stack
-- Added `runtime/model_config.py` to centralize hosted versus local model configuration.
-- Added environment-driven selection of local STT, LLM, and TTS endpoints via `USE_LOCAL_MODELS` and `LOCAL_*` settings.
-- Added a hosted fallback switch through `LOCAL_MODEL_FALLBACK_TO_LIVEKIT`.
+- `health`
+- `express_emotion`
+- `list_tour_stops`
+- `start_navigation_to_stop`
+- `get_navigation_action_status`
+- `navigate_to_stop` as compatibility wrapper
+- `cancel_navigation`
+- `get_navigation_status`
 
-### 2. Runtime model selection and health probing
-- Updated `SessionRuntime` to choose the model stack at startup instead of hard-wiring LiveKit Inference.
-- Added local service health probes before session startup for LLM, STT, and TTS.
-- Added telemetry events for local model health and final model-stack selection.
-- Fixed hosted fallback to use the runtime's configured LiveKit credentials rather than relying on process-level environment state.
+Current navigation note:
 
-### 3. Concrete self-hosted setup guidance
-- Documented `Ollama` as the recommended local LLM provider.
-- Documented `Speaches` as the recommended OpenAI-compatible STT and TTS server.
-- Added step-by-step README instructions for starting services, downloading models, configuring `.env.local`, and verifying health endpoints.
+- the MCP server defaults to `MORETEA_BYPASS_NAV2_ACTIVE_WAIT=1`
+- startup no longer hard-blocks on `waitUntilNav2Active()`
+- `health` exposes `nav2_import_ready`, `nav2_active_check_bypassed`, `readiness_detail`, and `startup_error`
 
-### 4. Test coverage updates
-- Added `tests/test_model_config.py`.
-- Added coverage for local model default config, startup health checks, hosted fallback, and fallback-disabled failure mode.
+### Voice / Launch
 
-## Verification Snapshot
-Executed successfully in this pass:
-- `uv run python -m compileall src`
-- `uv run python -m pytest tests/test_session_runtime.py tests/test_model_config.py -v`
+- the current barebone voice entrypoint is [openclaw_barebone.py](/home/frentzen/FYP/agent-starter-python/src/openclaw_barebone.py)
+- Speaches is the current local STT/TTS path
+- tmuxinator is now the preferred development launcher:
+  - `tmuxinator start moretea_robot`
+  - `tmuxinator start moretea_voice`
 
-Passing counts from verified local runs:
-- 8 runtime and model-config tests passed in this revision
+## Recent Milestones
 
-Previously verified and still relevant:
-- `uv run python -m pytest tests/test_tour_domain.py tests/test_engagement_service.py tests/test_navigation_service.py tests/test_session_runtime.py tests/test_knowledge_service.py -v`
-- `uv run python -m pytest tests/test_ros2_connector.py -v`
+### 1. Tmuxinator dev launchers
 
-Cloud-backed eval status:
-- `tests/test_agent.py` remains updated for the current Concierge and Tour flow.
-- Full eval execution is still pending a clean rerun in an environment with working model access.
+Added repo-tracked tmuxinator profiles plus an installer so development startup is repeatable across the robot PC and OpenClaw PC.
+
+### 2. Temporary Nav2 readiness bypass
+
+The robot MCP server now starts even when the robot’s Humble Nav2 stack does not expose the full standard lifecycle-managed readiness surface expected by `BasicNavigator`.
+
+### 3. Action-style robot navigation contract
+
+The robot MCP server now exposes:
+
+- `start_navigation_to_stop`
+- `get_navigation_action_status`
+- `cancel_navigation`
+
+while keeping `navigate_to_stop` as a compatibility tool.
+
+### 4. Humble robot-side MCP tour/navigation baseline
+
+The robot MCP repo now owns:
+
+- shared tour stop catalog
+- navigation primitives
+- eye-expression control
+- launch/runbook docs
 
 ## Current Gaps
-- The documented `Ollama + Speaches` stack still needs an end-to-end live validation run on the target laptop.
-- Real waypoint coordinates in `src/content/tour_stops.yaml` are still placeholders.
-- Physical robot testing with Nav2 is still required.
-- Recovery and replan narration still needs tuning on real robot feedback.
-- End-to-end latency with the RTX 4060 local stack is not yet benchmarked.
-- The current memory layer is session-scoped only, not persistent across sessions.
 
-## Recommended Next Work
-- Run the documented `Ollama + Speaches` setup on the RTX 4060 laptop and verify the health endpoints, selected models, and startup telemetry.
-- Benchmark local voice latency: first transcript, first token, first audio, and end-to-end turn time.
-- Replace placeholder tour-stop coordinates using the actual Garage map.
-- Run end-to-end robot tests for start, stop, pause, resume, retry, skip, and degraded behaviour.
-- Validate recovery and replan announcements on real robot feedback, then tune wording if needed.
-- Rerun `tests/test_agent.py` once the chosen inference path is fully available.
+- real end-to-end OpenClaw use of the navigation tools still needs more hardware validation
+- Nav2 readiness remains a temporary bypass, not the final architecture
+- real Garage waypoint calibration still needs validation
+- cloud-backed LiveKit eval coverage is still incomplete
+- tour policy remains split between current MCP primitives and longer-term OpenClaw ownership goals
+
+## Next Milestone
+
+Stabilize the real end-to-end tour flow on hardware:
+
+- OpenClaw uses the current MCP navigation and robot tools reliably
+- navigation behavior is verified in the Garage
+- current docs stay aligned with the actual launch and runtime path
