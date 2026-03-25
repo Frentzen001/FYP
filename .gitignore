@@ -1,0 +1,11 @@
+# Workspace editor and OS noise
+.vscode/
+.idea/
+.DS_Store
+*.swp
+*.swo
+
+# Workspace env files
+.env
+.env.*
+!.env.example
