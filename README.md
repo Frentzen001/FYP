@@ -50,8 +50,10 @@ If you are new to the workspace:
 
 1. Read [PRD.md](/home/frentzen/FYP/PRD.md) for the architecture and ownership model.
 2. Read [PROGRESS.md](/home/frentzen/FYP/PROGRESS.md) for what is actually working today.
-3. Install the dev launchers from [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md).
-4. Use the repo-specific docs depending on what you are touching:
+3. Bootstrap the Python environments:
+   - `./bootstrap_dev.sh`
+4. Install the dev launchers from [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md).
+5. Use the repo-specific docs depending on what you are touching:
    - voice/runtime work: [agent-starter-python/README.md](/home/frentzen/FYP/agent-starter-python/README.md)
    - robot/MCP work: [moretea-robot-mcp/README.md](/home/frentzen/FYP/moretea-robot-mcp/README.md)
    - operator launch/debug: [RUNBOOK.md](/home/frentzen/FYP/RUNBOOK.md)

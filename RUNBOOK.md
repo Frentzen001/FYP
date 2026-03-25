@@ -20,6 +20,13 @@ For repo-local concepts, use:
 
 Use tmuxinator for daily development.
 
+Fresh clone bootstrap:
+
+```bash
+cd /home/frentzen/FYP
+./bootstrap_dev.sh
+```
+
 Install the profiles once on each machine:
 
 ```bash
@@ -63,6 +70,11 @@ If you need to launch manually, keep this order:
 - ROS 2 Humble
 - Nav2 already running
 - Python environment synced with `uv sync`
+- robot ROS packages present on the machine:
+  - `linorobot2_bringup`
+  - `linorobot2_navigation`
+  - `micro_ros_agent`
+  - `moretea_arm`
 
 ### BasicNavigator import preflight
 
@@ -143,6 +155,11 @@ Acceptable probe result:
 - must not be `ECONNREFUSED`
 
 ### Start the voice-side tools
+
+Prerequisites:
+
+- Docker installed and usable by the current user
+- valid `agent-starter-python/.env.local`
 
 Speaches:
 

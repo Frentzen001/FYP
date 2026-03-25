@@ -17,19 +17,24 @@ windows:
       panes:
         - >-
           bash -lc 'source /opt/ros/humble/setup.bash &&
+          BASE_SERIAL_PORT="${MORETEA_BASE_SERIAL_PORT:-/dev/ttyESP32_motor}" &&
+          MICRO_ROS_BAUDRATE="${MORETEA_MICRO_ROS_BAUDRATE:-115200}" &&
           ros2 launch linorobot2_bringup bringup.launch.py
-          base_serial_port:=/dev/ttyESP32_motor
-          micro_ros_baudrate:=115200'
+          base_serial_port:=${BASE_SERIAL_PORT}
+          micro_ros_baudrate:=${MICRO_ROS_BAUDRATE}'
   - head_agent:
       panes:
         - >-
           bash -lc 'source /opt/ros/humble/setup.bash &&
-          ros2 run micro_ros_agent micro_ros_agent serial --dev /dev/ttyESP32_head -b 115200'
+          HEAD_SERIAL_PORT="${MORETEA_HEAD_SERIAL_PORT:-/dev/ttyESP32_head}" &&
+          HEAD_BAUDRATE="${MORETEA_HEAD_BAUDRATE:-115200}" &&
+          ros2 run micro_ros_agent micro_ros_agent serial --dev "${HEAD_SERIAL_PORT}" -b "${HEAD_BAUDRATE}"'
   - face_tracker:
       panes:
         - >-
           bash -lc 'source /opt/ros/humble/setup.bash &&
-          cd "$HOME/Tinkering-Project-More-Tea/ros2_ws/src/head_pubsub" &&
+          HEAD_PUBSUB_DIR="${MORETEA_HEAD_PUBSUB_DIR:-$HOME/Tinkering-Project-More-Tea/ros2_ws/src/head_pubsub}" &&
+          cd "${HEAD_PUBSUB_DIR}" &&
           source venv/bin/activate &&
           python head_pubsub/face_tracker_node.py'
   - arm:
@@ -40,7 +45,8 @@ windows:
   - online_access:
       panes:
         - >-
-          bash -lc 'cd "$HOME/Tinkering-Project-More-Tea/online_access" &&
+          bash -lc 'ONLINE_ACCESS_DIR="${MORETEA_ONLINE_ACCESS_DIR:-$HOME/Tinkering-Project-More-Tea/online_access}" &&
+          cd "${ONLINE_ACCESS_DIR}" &&
           source venv/bin/activate &&
           python server.py'
   - navigation:

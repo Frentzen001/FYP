@@ -8,6 +8,13 @@ Install `tmux` and `tmuxinator` on each machine, then install the repo-tracked p
 
 ```bash
 cd /home/frentzen/FYP
+./bootstrap_dev.sh
+```
+
+Or if you only want the tmuxinator profiles:
+
+```bash
+cd /home/frentzen/FYP
 ./tmuxinator/install_profiles.sh
 ```
 
@@ -49,6 +56,19 @@ Notes:
 - `tailscale up` stays manual and is shown as a reminder in `precheck`
 - `robot_mcp` is launched after the Nav-related services
 - if `8765` is busy, clear stale MCP processes before relaunching
+
+Machine-specific robot settings can be overridden with environment variables before starting the profile:
+
+```bash
+export MORETEA_BASE_SERIAL_PORT=/dev/ttyESP32_motor
+export MORETEA_MICRO_ROS_BAUDRATE=115200
+export MORETEA_HEAD_SERIAL_PORT=/dev/ttyESP32_head
+export MORETEA_HEAD_BAUDRATE=115200
+export MORETEA_HEAD_PUBSUB_DIR=$HOME/Tinkering-Project-More-Tea/ros2_ws/src/head_pubsub
+export MORETEA_ONLINE_ACCESS_DIR=$HOME/Tinkering-Project-More-Tea/online_access
+```
+
+This avoids editing the tmuxinator YAML just to match another machine’s ports or directories.
 
 ## OpenClaw PC
 
