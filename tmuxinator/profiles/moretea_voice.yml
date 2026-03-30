@@ -34,7 +34,12 @@ windows:
       panes:
         - >-
           bash -lc 'echo "Tunnel check:";
-          echo "  curl -i -H '\''Accept: text/event-stream'\'' http://127.0.0.1:8765/mcp";
+          echo "  /home/frentzen/FYP/moretea-robot-mcp/scripts/probe_tunneled_mcp.sh";
+          echo;
+          echo "Healthy tunnel means:";
+          echo "  1. the tunnel pane is running cleanly";
+          echo "  2. the MCP probe succeeds";
+          echo "  3. MCP health succeeds before prompt testing";
           echo;
           echo "Speaches check:";
           echo "  curl http://127.0.0.1:8000/v1/models";

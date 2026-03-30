@@ -39,6 +39,7 @@ Current navigation note:
 
 - the current barebone voice entrypoint is [openclaw_barebone.py](/home/frentzen/FYP/agent-starter-python/src/openclaw_barebone.py)
 - Speaches is the current local STT/TTS path
+- the barebone thinking cue is now intended to play through the local machine speaker during console/dev runs
 - tmuxinator is now the preferred development launcher:
   - `tmuxinator start moretea_robot`
   - `tmuxinator start moretea_voice`

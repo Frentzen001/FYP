@@ -48,6 +48,10 @@ export ROBOT_HOST=<robot-ip>
 tmuxinator start moretea_voice
 ```
 
+OpenClaw-side requirement:
+
+- `autossh` installed so the visible `tunnel` pane can reconnect after short drops
+
 Tmuxinator details:
 
 - [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md)
@@ -140,12 +144,26 @@ ROBOT_USER=<robot-user> ROBOT_HOST=<robot-ip> ./scripts/openclaw_tunnel.sh
 Expected behavior:
 
 - the command stays open
-- the tunnel remains quiet unless it fails
+- the tunnel stays attached to the current terminal or tmux pane
+- the startup banner shows the robot host, SSH user, and forwarded ports
+- `autossh` retries after short drops instead of leaving the tunnel dead silently
+
+OpenClaw PC requirement:
+
+- `autossh` must be installed for the visible tunnel workflow
+
+Optional tunnel overrides:
+
+- `LOCAL_PORT` to change the local forwarded port
+- `REMOTE_PORT` to change the robot-side MCP port
+- `SSH_SERVER_ALIVE_INTERVAL` to change the SSH keepalive interval
+- `SSH_SERVER_ALIVE_COUNT_MAX` to change how many keepalive misses are tolerated
 
 ### Verify the tunneled MCP endpoint
 
 ```bash
-curl -i -H 'Accept: text/event-stream' http://127.0.0.1:8765/mcp
+cd /home/frentzen/FYP/moretea-robot-mcp
+./scripts/probe_tunneled_mcp.sh
 ```
 
 Acceptable probe result:
@@ -153,6 +171,14 @@ Acceptable probe result:
 - reachable endpoint
 - may return `406`
 - must not be `ECONNREFUSED`
+
+Optional probe overrides:
+
+- `MCP_URL` to point at a different tunneled MCP endpoint
+- `MAX_ATTEMPTS` to change how many probe retries run
+- `SLEEP_SECONDS` to change the delay between retries
+- `CONNECT_TIMEOUT_SECONDS` to change the per-attempt connect timeout
+- `MAX_TIME_SECONDS` to change the total per-attempt curl timeout
 
 ### Start the voice-side tools
 
@@ -182,12 +208,23 @@ cd /home/frentzen/FYP/agent-starter-python
 ./scripts/run_openclaw_barebone.sh
 ```
 
+Thinking cue check:
+
+- the barebone worker now plays its short acceptance chirp through the local machine speaker
+- no LiveKit room join is required to hear it during console/dev runs
+
 Or combined:
 
 ```bash
 cd /home/frentzen/FYP/agent-starter-python
 ./scripts/dev_voice_stack.sh
 ```
+
+Before relying on robot tools:
+
+- confirm the SSH tunnel terminal or tmux `tunnel` pane is running cleanly
+- run `./scripts/probe_tunneled_mcp.sh` from `moretea-robot-mcp`
+- call MCP `health`
 
 Verify Speaches:
 
@@ -197,7 +234,11 @@ curl http://127.0.0.1:8000/v1/models
 
 ## MCP Verification
 
-Before testing OpenClaw prompts, call `health` first.
+Before testing OpenClaw prompts:
+
+1. confirm the SSH tunnel terminal or tmux `tunnel` pane is running cleanly
+2. run `./scripts/probe_tunneled_mcp.sh`
+3. call `health`
 
 Expected fields:
 
@@ -278,6 +319,42 @@ export MORETEA_ROBOT_MCP_ALLOW_NONLOCAL=1
 Check:
 
 - the robot MCP server is up
-- the SSH tunnel is open
-- `curl` to `http://127.0.0.1:8765/mcp` works on the OpenClaw PC
+- the SSH tunnel terminal or tmux `tunnel` pane is open and not repeatedly failing
+- `./scripts/probe_tunneled_mcp.sh` works on the OpenClaw PC
 - `health` works before you test prompts
+
+### `autossh` is missing on the OpenClaw PC
+
+Symptoms:
+
+- the `tunnel` pane exits immediately with an `autossh is required` message
+
+Fix:
+
+- install `autossh` on the OpenClaw PC
+- restart the `tunnel` pane or relaunch `tmuxinator start moretea_voice`
+
+### Tunnel is open but the robot MCP backend is unavailable
+
+Symptoms:
+
+- the `tunnel` pane stays open
+- `./scripts/probe_tunneled_mcp.sh` fails or keeps retrying
+
+Check:
+
+- the robot MCP server is actually running on the robot PC
+- the robot MCP server was restarted after Nav2 came up
+- `health` works once the probe succeeds
+
+### Tunnel repeatedly reconnects
+
+Symptoms:
+
+- the `tunnel` pane shows repeated reconnect attempts
+
+Check:
+
+- the robot PC is reachable over SSH
+- the robot network is stable
+- the robot MCP server is up after the SSH session recovers

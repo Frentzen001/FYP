@@ -79,6 +79,10 @@ export ROBOT_USER=<robot-user>
 export ROBOT_HOST=<robot-ip>
 ```
 
+OpenClaw-side requirement:
+
+- `autossh` installed so the visible tunnel pane can reconnect after short drops
+
 Then run:
 
 ```bash
@@ -93,12 +97,14 @@ Windows opened:
 - `barebone`
 - `checks`
 
+The `tunnel` window stays visible by design. It is the operator-facing source of truth for the OpenClaw-to-robot MCP link, so developers can see whether the tunnel is connected, retrying, or failed.
+
 ## Verification
 
 After both profiles are up:
 
 ```bash
-curl -i -H 'Accept: text/event-stream' http://127.0.0.1:8765/mcp
+/home/frentzen/FYP/moretea-robot-mcp/scripts/probe_tunneled_mcp.sh
 curl http://127.0.0.1:8000/v1/models
 ```
 
@@ -108,6 +114,12 @@ Then call MCP `health` first and confirm:
 - `tour_navigation.nav2_import_ready: true`
 
 `tour_navigation.nav2_active_check_bypassed: true` is acceptable in the current Humble setup.
+
+Treat the tunnel as ready only when:
+
+- the `tunnel` pane is running cleanly
+- the MCP probe succeeds
+- `health` succeeds before prompt testing
 
 For the full cross-machine launch and troubleshooting guide, use:
 
