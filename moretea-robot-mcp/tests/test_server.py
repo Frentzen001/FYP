@@ -43,6 +43,124 @@ class FakePublisher:
         return payload
 
 
+class FakeCamera:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.started = False
+        self.shutdown_called = False
+        self.health_payload = {
+            "success": True,
+            "ros_ready": False,
+            "camera_ready": False,
+            "source_topic": "/camera/image_raw",
+            "topic_kind": "raw",
+            "frame_buffered": False,
+            "last_captured_at": None,
+            "startup_error": None,
+        }
+        self.capture_payload = {
+            "success": True,
+            "image_base64": "ZmFrZS1qcGVn",
+            "mime_type": "image/jpeg",
+            "width": 640,
+            "height": 480,
+            "encoding": "rgb8",
+            "captured_at": "ts",
+            "source_topic": "/camera/image_raw",
+        }
+
+    def start(self) -> None:
+        self.started = True
+        self.health_payload["ros_ready"] = True
+        self.health_payload["camera_ready"] = True
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+    def health(self) -> dict[str, object]:
+        return dict(self.health_payload)
+
+    def capture_image(self) -> dict[str, object]:
+        if isinstance(self.capture_payload, Exception):
+            raise self.capture_payload
+        return dict(self.capture_payload)
+
+
+class FakeFaceRecognition:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.started = False
+        self.shutdown_called = False
+        self.health_payload = {
+            "success": True,
+            "ros_ready": False,
+            "face_recognition_ready": False,
+            "source_topic": "/face_recognition/name",
+            "snapshot_buffered": False,
+            "last_observed_at": None,
+            "startup_error": None,
+        }
+        self.faces_payload = {
+            "success": True,
+            "faces": [{"name": "Alice", "confidence": 0.97}],
+            "observed_at": "ts",
+            "source_topic": "/face_recognition/name",
+        }
+
+    def start(self) -> None:
+        self.started = True
+        self.health_payload["ros_ready"] = True
+        self.health_payload["face_recognition_ready"] = True
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+    def health(self) -> dict[str, object]:
+        return dict(self.health_payload)
+
+    def get_recognized_faces(self) -> dict[str, object]:
+        return dict(self.faces_payload)
+
+
+class FakeFaceRegistration:
+    def __init__(self, *_args: object, **_kwargs: object) -> None:
+        self.started = False
+        self.shutdown_called = False
+        self.health_payload = {
+            "success": True,
+            "ros_ready": False,
+            "face_registration_ready": False,
+            "service_name": "register_face",
+            "db_path": "/tmp/face_db.pkl",
+            "startup_error": None,
+        }
+        self.register_payload = {
+            "success": True,
+            "name": "Alice",
+            "message": "Ready to register 'Alice' from next visible face",
+            "service_name": "register_face",
+            "duplicate": False,
+            "db_path": "/tmp/face_db.pkl",
+        }
+        self._db_path = "/tmp/face_db.pkl"
+
+    def start(self) -> None:
+        self.started = True
+        self.health_payload["ros_ready"] = True
+        self.health_payload["face_registration_ready"] = True
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+    def health(self) -> dict[str, object]:
+        return dict(self.health_payload)
+
+    def register_face(self, name: str) -> dict[str, object]:
+        if isinstance(self.register_payload, Exception):
+            raise self.register_payload
+        payload = dict(self.register_payload)
+        payload["name"] = name.strip()
+        return payload
+
+
 class FakeNavigation:
     def __init__(self) -> None:
         self.started = False
@@ -205,6 +323,9 @@ def test_health_reports_nested_provider_statuses() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=(),
@@ -215,13 +336,22 @@ def test_health_reports_nested_provider_statuses() -> None:
 
     assert payload["success"] is True
     assert payload["robot_control_ready"] is False
+    assert payload["camera_ready"] is False
+    assert payload["face_recognition_ready"] is False
+    assert payload["face_registration_ready"] is False
     assert payload["navigation_ready"] is False
     assert payload["publisher"]["topic"] == "/eye_expression"
+    assert payload["camera"]["source_topic"] == "/camera/image_raw"
+    assert payload["face_recognition"]["source_topic"] == "/face_recognition/name"
+    assert payload["face_registration"]["service_name"] == "register_face"
     assert payload["navigation"]["status_topic"] == "/navigate_to_pose/_action/status"
     assert payload["tour_navigation"]["active_goal"] is False
     assert payload["tour_navigation"]["nav2_active_check_bypassed"] is True
     assert payload["startup_errors"] == {
         "publisher": None,
+        "camera": None,
+        "face_recognition": None,
+        "face_registration": None,
         "navigation": None,
         "tour_navigation": None,
         "tour_stops": None,
@@ -234,6 +364,9 @@ def test_express_emotion_returns_structured_error_for_invalid_mood() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=publisher,
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=(),
@@ -247,6 +380,155 @@ def test_express_emotion_returns_structured_error_for_invalid_mood() -> None:
         "error": "Unsupported emotion 'curious'.",
         "mood": "curious",
     }
+
+
+def test_capture_image_returns_camera_payload() -> None:
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.capture_image(ctx)
+
+    assert payload["success"] is True
+    assert payload["mime_type"] == "image/jpeg"
+    assert payload["source_topic"] == "/camera/image_raw"
+
+
+def test_capture_image_returns_structured_error_when_no_frame_is_buffered() -> None:
+    camera = FakeCamera()
+    camera.capture_payload = RuntimeError("No camera frame is buffered yet from topic '/camera/image_raw'.")
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=camera,
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.capture_image(ctx)
+
+    assert payload["success"] is False
+    assert "No camera frame is buffered yet" in str(payload["error"])
+
+
+def test_get_recognized_faces_returns_face_snapshot() -> None:
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.get_recognized_faces(ctx)
+
+    assert payload["success"] is True
+    assert payload["faces"] == [{"name": "Alice", "confidence": 0.97}]
+
+
+def test_get_recognized_faces_allows_empty_results() -> None:
+    face_recognition = FakeFaceRecognition()
+    face_recognition.faces_payload = {
+        "success": True,
+        "faces": [],
+        "observed_at": "ts",
+        "source_topic": "/face_recognition/name",
+    }
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=face_recognition,
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.get_recognized_faces(ctx)
+
+    assert payload["success"] is True
+    assert payload["faces"] == []
+
+
+def test_register_face_returns_provider_payload() -> None:
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.register_face(" Alice ", ctx)
+
+    assert payload["success"] is True
+    assert payload["name"] == "Alice"
+    assert payload["duplicate"] is False
+
+
+def test_register_face_surfaces_duplicate_rejection() -> None:
+    face_registration = FakeFaceRegistration()
+    face_registration.register_payload = ValueError("Face 'Alice' is already registered.")
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=face_registration,
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.register_face("Alice", ctx)
+
+    assert payload["success"] is False
+    assert payload["name"] == "Alice"
+    assert payload["duplicate"] is True
+
+
+def test_register_face_surfaces_runtime_failure() -> None:
+    face_registration = FakeFaceRegistration()
+    face_registration.register_payload = RuntimeError("Face registration service 'register_face' is not available.")
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=face_registration,
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+        )
+    )
+
+    payload = server.register_face("Alice", ctx)
+
+    assert payload["success"] is False
+    assert payload["duplicate"] is False
 
 
 def test_get_navigation_status_returns_provider_payload() -> None:
@@ -264,6 +546,9 @@ def test_get_navigation_status_returns_provider_payload() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=navigation,
             tour_navigation=FakeTourNavigation(),
             tour_stops=(),
@@ -284,6 +569,9 @@ def test_start_navigation_to_stop_returns_action_payload() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=stops,
@@ -302,6 +590,9 @@ def test_get_navigation_action_status_delegates_to_provider() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=(),
@@ -323,6 +614,9 @@ def test_list_tour_stops_returns_serialized_catalog() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=stops,
@@ -341,6 +635,9 @@ def test_navigate_to_stop_returns_structured_error_for_unknown_stop() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=(),
@@ -358,6 +655,9 @@ def test_cancel_navigation_delegates_to_tour_navigation_provider() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=FakeTourNavigation(),
             tour_stops=(),
@@ -381,18 +681,34 @@ def test_lifespan_degrades_cleanly_when_ros_startup_fails() -> None:
         def start(self) -> None:
             raise RuntimeError("nav offline")
 
+    class FailingCamera(FakeCamera):
+        def start(self) -> None:
+            raise RuntimeError("camera offline")
+
+    class FailingFaceRecognition(FakeFaceRecognition):
+        def start(self) -> None:
+            raise RuntimeError("face offline")
+
+    class FailingFaceRegistration(FakeFaceRegistration):
+        def start(self) -> None:
+            raise RuntimeError("face registration offline")
+
     class FailingTourNavigation(FakeTourNavigation):
         def start(self) -> None:
             raise RuntimeError("tour nav offline")
 
     async def run() -> None:
         with patch.object(server, "EyeExpressionPublisher", FailingPublisher), patch.object(
+            server, "CameraCaptureProvider", FailingCamera
+        ), patch.object(
+            server, "FaceRecognitionStatusProvider", FailingFaceRecognition
+        ), patch.object(
+            server, "FaceRegistrationProvider", FailingFaceRegistration
+        ), patch.object(
             server, "NavigationStatusProvider", FailingNavigation
         ), patch.object(
             server, "TourNavigationExecutor", FailingTourNavigation
-        ), patch.object(
-            server, "load_tour_stops", return_value=()
-        ):
+        ), patch.object(server, "load_tour_stops", return_value=()):
             async with server.app_lifespan(server.mcp) as app_context:
                 created["ctx"] = app_context
 
@@ -400,9 +716,15 @@ def test_lifespan_degrades_cleanly_when_ros_startup_fails() -> None:
 
     app_context = created["ctx"]
     assert app_context.publisher_start_error == "publisher offline"
+    assert app_context.camera_start_error == "camera offline"
+    assert app_context.face_recognition_start_error == "face offline"
+    assert app_context.face_registration_start_error == "face registration offline"
     assert app_context.navigation_start_error == "nav offline"
     assert app_context.tour_navigation_start_error == "tour nav offline"
     assert app_context.publisher.shutdown_called is True
+    assert app_context.camera.shutdown_called is True
+    assert app_context.face_recognition.shutdown_called is True
+    assert app_context.face_registration.shutdown_called is True
     assert app_context.navigation.shutdown_called is True
     assert app_context.tour_navigation.shutdown_called is True
 
@@ -419,6 +741,9 @@ def test_health_exposes_navigation_startup_error() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=tour_navigation,
             tour_stops=(),
@@ -446,6 +771,9 @@ def test_health_exposes_nav2_bypass_state() -> None:
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
             tour_navigation=tour_navigation,
             tour_stops=(),
@@ -458,3 +786,26 @@ def test_health_exposes_nav2_bypass_state() -> None:
     assert payload["tour_navigation"]["nav2_import_ready"] is True
     assert payload["tour_navigation"]["nav2_active_check_bypassed"] is True
     assert "runtime goal execution" in str(payload["tour_navigation"]["readiness_detail"]).lower()
+
+
+def test_health_exposes_face_registration_startup_error() -> None:
+    face_registration = FakeFaceRegistration()
+    face_registration.health_payload["startup_error"] = "missing face_tracking_interfaces"
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=face_registration,
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            tour_stops=(),
+            face_registration_start_error="missing face_tracking_interfaces",
+        )
+    )
+
+    payload = server.health(ctx)
+
+    assert payload["face_registration_ready"] is False
+    assert payload["face_registration"]["startup_error"] == "missing face_tracking_interfaces"
+    assert payload["startup_errors"]["face_registration"] == "missing face_tracking_interfaces"

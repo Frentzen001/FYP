@@ -19,6 +19,9 @@ Verified in the current robot MCP path:
 
 - `health`
 - `express_emotion`
+- `capture_image`
+- `get_recognized_faces`
+- `register_face`
 - `list_tour_stops`
 - `start_navigation_to_stop`
 - `get_navigation_action_status`

@@ -9,6 +9,18 @@ MoreTea is a Garage@EEE companion robot built around:
 
 This repository root is the developer entrypoint for the workspace. It is intentionally short and link-driven.
 
+## Current Robot MCP Highlights
+
+Current robot-side MCP capabilities include:
+
+- navigation primitives for tours and point-to-point movement
+- eye-expression control
+- `capture_image` for returning the latest buffered camera frame to OpenClaw as base64 JPEG
+- `get_recognized_faces` for returning the latest face-recognition snapshot as structured names/confidences
+- `register_face` for saving a newly met person's face through the robot-side ROS service
+
+See [moretea-robot-mcp/README.md](/home/frentzen/FYP/moretea-robot-mcp/README.md) for the repo-local tool surface and implementation details.
+
 ## Active Repos
 
 - [agent-starter-python](/home/frentzen/FYP/agent-starter-python/README.md)

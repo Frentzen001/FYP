@@ -6,6 +6,9 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
 
+from .camera_capture import CAMERA_TOPIC, CAMERA_TOPIC_KIND, CameraCaptureProvider
+from .face_registration import FACE_DB_PATH, FACE_REGISTRATION_SERVICE, FaceRegistrationProvider
+from .face_recognition_status import FACE_RECOGNITION_TOPIC, FaceRecognitionStatusProvider
 from .navigation_status import NavigationStatusProvider
 from .ros_eye_publisher import EyeExpressionPublisher
 from .tour_navigation import TourNavigationExecutor
@@ -14,19 +17,38 @@ from .tour_stops import TourStop, load_tour_stops, serialize_stop
 try:
     from mcp.server.fastmcp import Context, FastMCP
     from mcp.server.session import ServerSession
-except ImportError as exc:  # pragma: no cover - import guard for robot runtime
-    raise RuntimeError(
-        "The MCP Python SDK is not installed. Install dependencies with `uv sync` or `pip install \"mcp[cli]\"`."
-    ) from exc
+except ImportError:  # pragma: no cover - lightweight test fallback
+    class ServerSession:  # type: ignore[no-redef]
+        pass
+
+    class Context:  # type: ignore[no-redef]
+        def __class_getitem__(cls, _item: object) -> type["Context"]:
+            return cls
+
+    class FastMCP:  # type: ignore[no-redef]
+        def __init__(self, *_args: object, **_kwargs: object) -> None:
+            return
+
+        def tool(self) -> object:
+            def decorator(func: object) -> object:
+                return func
+
+            return decorator
 
 
 @dataclass
 class AppContext:
     publisher: EyeExpressionPublisher
+    camera: CameraCaptureProvider
+    face_recognition: FaceRecognitionStatusProvider
+    face_registration: FaceRegistrationProvider
     navigation: NavigationStatusProvider
     tour_navigation: TourNavigationExecutor
     tour_stops: tuple[TourStop, ...]
     publisher_start_error: str | None = None
+    camera_start_error: str | None = None
+    face_recognition_start_error: str | None = None
+    face_registration_start_error: str | None = None
     navigation_start_error: str | None = None
     tour_navigation_start_error: str | None = None
     tour_stops_error: str | None = None
@@ -35,9 +57,23 @@ class AppContext:
 @asynccontextmanager
 async def app_lifespan(_: FastMCP) -> AsyncIterator[AppContext]:
     publisher = EyeExpressionPublisher()
+    camera = CameraCaptureProvider(
+        image_topic=os.getenv("MORETEA_CAMERA_TOPIC", CAMERA_TOPIC),
+        topic_kind=os.getenv("MORETEA_CAMERA_TOPIC_KIND", CAMERA_TOPIC_KIND),
+    )
+    face_recognition = FaceRecognitionStatusProvider(
+        topic=os.getenv("MORETEA_FACE_RECOGNITION_TOPIC", FACE_RECOGNITION_TOPIC)
+    )
+    face_registration = FaceRegistrationProvider(
+        service_name=os.getenv("MORETEA_FACE_REGISTRATION_SERVICE", FACE_REGISTRATION_SERVICE),
+        db_path=os.getenv("MORETEA_FACE_DB_PATH", FACE_DB_PATH),
+    )
     navigation = NavigationStatusProvider()
     tour_navigation = TourNavigationExecutor()
     publisher_start_error: str | None = None
+    camera_start_error: str | None = None
+    face_recognition_start_error: str | None = None
+    face_registration_start_error: str | None = None
     navigation_start_error: str | None = None
     tour_navigation_start_error: str | None = None
     tour_stops_error: str | None = None
@@ -47,6 +83,21 @@ async def app_lifespan(_: FastMCP) -> AsyncIterator[AppContext]:
         publisher.start()
     except Exception as exc:  # noqa: BLE001
         publisher_start_error = str(exc)
+
+    try:
+        camera.start()
+    except Exception as exc:  # noqa: BLE001
+        camera_start_error = str(exc)
+
+    try:
+        face_recognition.start()
+    except Exception as exc:  # noqa: BLE001
+        face_recognition_start_error = str(exc)
+
+    try:
+        face_registration.start()
+    except Exception as exc:  # noqa: BLE001
+        face_registration_start_error = str(exc)
 
     try:
         navigation.start()
@@ -66,10 +117,16 @@ async def app_lifespan(_: FastMCP) -> AsyncIterator[AppContext]:
     try:
         yield AppContext(
             publisher=publisher,
+            camera=camera,
+            face_recognition=face_recognition,
+            face_registration=face_registration,
             navigation=navigation,
             tour_navigation=tour_navigation,
             tour_stops=tour_stops,
             publisher_start_error=publisher_start_error,
+            camera_start_error=camera_start_error,
+            face_recognition_start_error=face_recognition_start_error,
+            face_registration_start_error=face_registration_start_error,
             navigation_start_error=navigation_start_error,
             tour_navigation_start_error=tour_navigation_start_error,
             tour_stops_error=tour_stops_error,
@@ -77,6 +134,9 @@ async def app_lifespan(_: FastMCP) -> AsyncIterator[AppContext]:
     finally:
         tour_navigation.shutdown()
         navigation.shutdown()
+        face_registration.shutdown()
+        face_recognition.shutdown()
+        camera.shutdown()
         publisher.shutdown()
 
 
@@ -85,6 +145,8 @@ mcp = FastMCP(
     instructions=(
         "Robot-side control server for MoreTea. "
         "Use health to verify ROS readiness, express_emotion to change the robot eyes, "
+        "capture_image to fetch the latest buffered camera frame, get_recognized_faces to inspect the latest face-recognition snapshot, "
+        "register_face to save a newly met person's face through the robot-side face registration service, "
         "list_tour_stops to inspect known tour locations, start_navigation_to_stop to begin one stop navigation action, "
         "get_navigation_action_status to inspect one navigation action, navigate_to_stop only as a temporary compatibility wrapper, "
         "cancel_navigation to halt an active navigation task, and get_navigation_status to inspect Nav2 state."
@@ -106,18 +168,30 @@ def health(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Report whether the robot-side MCP providers are ready."""
     lifespan = ctx.request_context.lifespan_context
     publisher = lifespan.publisher.health()
+    camera = lifespan.camera.health()
+    face_recognition = lifespan.face_recognition.health()
+    face_registration = lifespan.face_registration.health()
     navigation = lifespan.navigation.health()
     tour_navigation = lifespan.tour_navigation.health()
     return {
         "success": True,
         "robot_control_ready": bool(publisher.get("ros_ready")),
+        "camera_ready": bool(camera.get("camera_ready")),
+        "face_recognition_ready": bool(face_recognition.get("face_recognition_ready")),
+        "face_registration_ready": bool(face_registration.get("face_registration_ready")),
         "navigation_ready": bool(tour_navigation.get("nav2_ready")),
         "publisher": publisher,
+        "camera": camera,
+        "face_recognition": face_recognition,
+        "face_registration": face_registration,
         "navigation": navigation,
         "tour_navigation": tour_navigation,
         "tour_stop_count": len(lifespan.tour_stops),
         "startup_errors": {
             "publisher": lifespan.publisher_start_error,
+            "camera": lifespan.camera_start_error,
+            "face_recognition": lifespan.face_recognition_start_error,
+            "face_registration": lifespan.face_registration_start_error,
             "navigation": lifespan.navigation_start_error,
             "tour_navigation": lifespan.tour_navigation_start_error,
             "tour_stops": lifespan.tour_stops_error,
@@ -133,6 +207,34 @@ def express_emotion(mood: str, ctx: Context[ServerSession, AppContext]) -> dict[
         return publisher.publish_emotion(mood)
     except (RuntimeError, ValueError) as exc:
         return _error_payload(str(exc), mood=mood)
+
+
+@mcp.tool()
+def capture_image(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
+    """Return the latest buffered camera frame as a base64-encoded JPEG."""
+    try:
+        return ctx.request_context.lifespan_context.camera.capture_image()
+    except RuntimeError as exc:
+        return _error_payload(str(exc))
+
+
+@mcp.tool()
+def get_recognized_faces(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
+    """Return the latest structured face-recognition snapshot from the robot."""
+    return ctx.request_context.lifespan_context.face_recognition.get_recognized_faces()
+
+
+@mcp.tool()
+def register_face(name: str, ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
+    """Register one newly met person's face through the robot-side ROS service."""
+    provider = ctx.request_context.lifespan_context.face_registration
+    try:
+        return provider.register_face(name)
+    except ValueError as exc:
+        normalized_name = name.strip()
+        return _error_payload(str(exc), name=normalized_name, duplicate="already registered" in str(exc).lower(), db_path=str(provider._db_path))
+    except RuntimeError as exc:
+        return _error_payload(str(exc), name=name.strip(), duplicate=False, db_path=str(provider._db_path))
 
 
 @mcp.tool()

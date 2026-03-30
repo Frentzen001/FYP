@@ -30,6 +30,9 @@ This repo is the bounded execution surface on the robot PC.
 
 - `health`
 - `express_emotion`
+- `capture_image`
+- `get_recognized_faces`
+- `register_face`
 - `list_tour_stops`
 - `start_navigation_to_stop`
 - `get_navigation_action_status`
@@ -55,6 +58,12 @@ Temporary navigation note:
 
 - [server.py](/home/frentzen/FYP/moretea-robot-mcp/src/moretea_robot_mcp/server.py)
   MCP server and tool registration.
+- [camera_capture.py](/home/frentzen/FYP/moretea-robot-mcp/src/moretea_robot_mcp/camera_capture.py)
+  Buffered camera frame capture for OpenClaw vision requests.
+- [face_recognition_status.py](/home/frentzen/FYP/moretea-robot-mcp/src/moretea_robot_mcp/face_recognition_status.py)
+  Latest face-recognition snapshot provider.
+- [face_registration.py](/home/frentzen/FYP/moretea-robot-mcp/src/moretea_robot_mcp/face_registration.py)
+  ROS face registration service client and duplicate-name guard.
 - [tour_navigation.py](/home/frentzen/FYP/moretea-robot-mcp/src/moretea_robot_mcp/tour_navigation.py)
   Current Humble navigation wrapper.
 - [navigation_status.py](/home/frentzen/FYP/moretea-robot-mcp/src/moretea_robot_mcp/navigation_status.py)

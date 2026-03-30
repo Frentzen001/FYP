@@ -161,6 +161,13 @@ Prerequisites:
 - Docker installed and usable by the current user
 - valid `agent-starter-python/.env.local`
 
+Create it from the template if needed:
+
+```bash
+cd /home/frentzen/FYP/agent-starter-python
+cp .env.example .env.local
+```
+
 Speaches:
 
 ```bash
