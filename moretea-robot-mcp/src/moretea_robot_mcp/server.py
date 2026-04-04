@@ -23,6 +23,7 @@ from .tour_navigation import TourNavigationExecutor
 from .tour_stops import TourStop, load_tour_stops, serialize_stop
 
 try:
+    from mcp import types as mcp_types
     from mcp.server.fastmcp import Context, FastMCP
     from mcp.server.session import ServerSession
     from mcp.types import ImageContent, TextContent
@@ -290,12 +291,8 @@ def capture_image(ctx: Context[ServerSession, AppContext]):
         f"Resolution: {result.get('width')}x{result.get('height')} px. "
         f"Topic: {result.get('source_topic')}."
     )
-    # Pre-format as a complete data URL. Some MCP clients fail to read the
-    # mimeType field and build a broken URL; by embedding the MIME type in the
-    # data field we guarantee the full URL is always well-formed.
-    data_url = f"data:image/jpeg;base64,{result['image_base64']}"
     return [
-        ImageContent(type="image", data=data_url, mimeType="image/jpeg"),
+        ImageContent(type="image", data=result["image_base64"], mimeType="image/jpeg"),
         TextContent(type="text", text=meta_text),
     ]
 
