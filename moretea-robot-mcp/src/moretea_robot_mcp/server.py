@@ -418,7 +418,7 @@ def cancel_navigation(
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
-_WAIT_MAX_CAP_S = 25.0
+_WAIT_MAX_CAP_S = 90.0   # loopback via SSH tunnel — no real gateway timeout constraint
 _WAIT_POLL_INTERVAL_S = 0.05
 
 
@@ -546,12 +546,58 @@ def move_distance(
 
     distance_m: metres to travel. Positive = forward, negative = backward.
     speed_m_s: travel speed in m/s. Defaults to 0.15 m/s. Clamped to 0.4 m/s.
-    Duration is calculated as distance / speed. Use for cautious approach manoeuvres.
+    Uses closed-loop odometry feedback when available (accurate to ~2 cm).
+    Falls back to open-loop timing if odometry not yet received.
+    Returns: success, mode (closed_loop|open_loop), requested_distance_m,
+             actual_distance_m (closed_loop only), timed_out.
     """
     try:
-        return ctx.request_context.lifespan_context.motion.move_distance(
+        app = ctx.request_context.lifespan_context
+        pos_fn = None
+        if app.sensors is not None:
+            pos_fn = app.sensors.get_position
+        return app.motion.move_distance(
             distance_m=distance_m,
             speed_m_s=speed_m_s,
+            pos_fn=pos_fn,
+        )
+    except RuntimeError as exc:
+        return _error_payload(str(exc))
+
+
+@mcp.tool()
+def rotate_angle(
+    ctx: Context[ServerSession, AppContext],
+    angle_deg: float,
+    speed_rad_s: float = 0.4,
+) -> dict[str, object]:
+    """Rotate the robot in place by an exact number of degrees.
+
+    Use this tool whenever the user asks to turn, rotate, spin, or face a
+    different direction by a specific angle. Do NOT use move() with angular_z
+    for angle-based rotation — this tool uses odometry feedback for accuracy.
+
+    angle_deg: degrees to rotate. Positive = counterclockwise (left turn),
+               negative = clockwise (right turn).
+               Examples: 90 = quarter-turn left, -90 = quarter-turn right,
+               180 = half-turn (face backwards), 360 = full spin.
+    speed_rad_s: rotation speed in rad/s. Defaults to 0.4 rad/s. Clamped to 0.8 rad/s.
+                 For angles > 180°, use 0.8 rad/s to stay within the 10s timeout.
+
+    Uses closed-loop odometry feedback when available (accurate to ~3°).
+    Falls back to open-loop timing if odometry not yet received.
+    Returns: success, mode (closed_loop|open_loop), requested_angle_deg,
+             actual_angle_deg (closed_loop only), timed_out.
+    """
+    try:
+        app = ctx.request_context.lifespan_context
+        yaw_fn = None
+        if app.sensors is not None:
+            yaw_fn = app.sensors.get_yaw
+        return app.motion.rotate_angle(
+            angle_deg=angle_deg,
+            speed_rad_s=speed_rad_s,
+            yaw_fn=yaw_fn,
         )
     except RuntimeError as exc:
         return _error_payload(str(exc))

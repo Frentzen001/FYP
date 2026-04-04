@@ -151,6 +151,27 @@ Expected behavior:
 OpenClaw PC requirement:
 
 - `autossh` must be installed for the visible tunnel workflow
+- SSH key-based login to the robot PC is strongly recommended so reconnects do not get stuck on a password prompt
+
+Install `autossh` on Ubuntu:
+
+```bash
+sudo apt update
+sudo apt install autossh
+autossh -V
+```
+
+Recommended one-time SSH setup:
+
+```bash
+ssh-keygen -t ed25519
+ssh-copy-id <robot-user>@<robot-ip>
+ssh <robot-user>@<robot-ip>
+```
+
+Expected result:
+
+- the plain `ssh` login works without prompting for a password before you rely on `autossh`
 
 Optional tunnel overrides:
 
@@ -232,6 +253,28 @@ Verify Speaches:
 curl http://127.0.0.1:8000/v1/models
 ```
 
+## OpenClaw Agent Config
+
+The OpenClaw agent config lives in `rosclaw-docker/`:
+
+- `openclaw.json` — tool allow-list, model params, gateway config
+- `workspace-soul.md` — agent system prompt and navigation pattern
+- `skills/SKILL.md` — tool-by-tool usage reference
+
+After any change to these files, restart the container:
+
+```bash
+cd /home/frentzen/FYP/rosclaw-docker
+docker compose restart rosclaw-isolated
+```
+
+Key config facts:
+- Tools must be in the `tools.allow` list in `openclaw.json` to be callable
+- `moretea_robot_navigate_to_stop` is removed — do not re-add it (blocked the HTTP connection)
+- `moretea_robot_wait_for_navigation_action` is the replacement — event-driven, max 25s per call
+
+---
+
 ## MCP Verification
 
 Before testing OpenClaw prompts:
@@ -255,6 +298,14 @@ That means the server is using the temporary startup bypass and real navigation 
 
 ## Current Tool Checks
 
+Robot motion:
+
+- `move(angular_z=0.4, duration_s=2.0)` — timed velocity control
+- `move_distance(distance_m=0.5)` — fixed-distance travel (closed-loop via odometry)
+- `rotate_angle(angle_deg=90)` — rotate left 90° (closed-loop via odometry)
+- `rotate_angle(angle_deg=-180)` — rotate right 180°
+- `stop_motion()` — immediate halt
+
 Robot emotion:
 
 - `express_emotion("happy")`
@@ -263,16 +314,29 @@ Robot emotion:
 Robot navigation:
 
 - `list_tour_stops()`
-- `start_navigation_to_stop("fabrication_lab")`
-- `get_navigation_action_status(action_id)`
+- `start_navigation_to_stop("fabrication_lab")` — returns immediately with `action_id`
+- `wait_for_navigation_action(action_id, max_wait_s=90)` — polls up to 90 s; returns early on reroute/recovery events or timeout
+- `get_navigation_action_status(action_id)` — one-shot status snapshot without blocking
 - `cancel_navigation()`
 - `get_navigation_status()`
 
-Compatibility tool:
+Navigation pattern (mandatory for OpenClaw):
 
-- `navigate_to_stop("fabrication_lab")`
+1. call `start_navigation_to_stop` → get `action_id`
+2. tell the visitor you are heading there (≤10 words)
+3. call `wait_for_navigation_action(action_id, max_wait_s=10)` — ONE call per turn:
+   - `event="replan"` → speak `last_event_note` in ≤8 words, end turn
+   - `event="recovery"` → speak `last_event_note` in ≤8 words, end turn
+   - `timed_out=True` → give a short distance update, end turn
+   - `event=None, timed_out=False` → navigation finished, report outcome, end turn
+4. if visitor asks a question mid-navigation: call `get_navigation_action_status` (instant), answer, end turn — do NOT call `wait_for_navigation_action` unless they ask for a navigation update
 
-Use action-style navigation as the preferred path.
+Each turn ends after one wait call. Navigation continues in the background. This prevents LiveKit turn timeouts.
+
+The `last_event_note` strings are already human-readable and suitable to speak directly.
+Each poll cycle is 50 ms, so reroute events are surfaced within ~50 ms of occurring.
+
+Note: `navigate_to_stop` is no longer exposed as an MCP tool — it blocked the HTTP connection for the full navigation duration and caused timeouts. The previous unlimited wait loop had the same problem and is now replaced with one wait call per turn.
 
 ## Troubleshooting
 
@@ -333,6 +397,21 @@ Fix:
 
 - install `autossh` on the OpenClaw PC
 - restart the `tunnel` pane or relaunch `tmuxinator start moretea_voice`
+
+### Tunnel prompts for a password or fails with `Permission denied`
+
+Symptoms:
+
+- the `tunnel` pane asks for an SSH password
+- reconnects are not automatic
+- SSH eventually fails with `Permission denied`
+
+Check:
+
+- `ROBOT_USER` matches the actual SSH username on the robot PC
+- `ROBOT_HOST` points at the robot PC IP or hostname
+- plain `ssh <robot-user>@<robot-ip>` works from the OpenClaw PC
+- SSH key-based login is configured so `autossh` can reconnect without manual input
 
 ### Tunnel is open but the robot MCP backend is unavailable
 

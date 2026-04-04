@@ -2,64 +2,63 @@ stops:
   - id: entrance
     name: Entrance
     aliases: ["front door", "entry"]
-    x: 0.604
-    y: 0.2202
-    ow: 1.0
+    x: 8.2602
+    y: -9.013
+    ow: 0.65235
     narration: "This is the main entrance to Garage@EEE, where most first-time visitors begin. It is a natural place to orient yourself before exploring the different work zones in the space."
     faq_tags: ["orientation", "start"]
-  - id: fabrication_lab
-    name: Fabrication Lab
-    aliases: ["fab lab", "fabrication"]
-    x: 1.14
-    y: 1.15
-    ow: 0.924
-    narration: "The Fabrication Lab supports hands-on prototype building with workshop tools and fabrication equipment. This is where many ideas start becoming physical objects that can be tested and improved."
-    faq_tags: ["fabrication", "tools"]
-  - id: machines_lab
-    name: Machines Lab
-    aliases: ["electronics lab", "electronics", "machines"]
-    x: 1.2
-    y: -1.0
-    ow: 0.924
-    narration: "The Machines Lab is one of the main areas for electronics prototyping, machine work, and detailed bench-based project development. Students often come here when a project needs precise assembly and testing."
-    faq_tags: ["electronics", "machines"]
+  - id: project_pods
+    name: Kirchoff's and Maxwell's Pods
+    aliases: ["kirchoff", "maxwell", "pod one", "pod two", "project pods"]
+    x: 9.0873
+    y: -8.9435
+    ow: 0.89674
+    narration: "Kirchoff's Pod and Maxwell's Pod are collaborative project pods used for small-group discussion, planning, iteration, and hands-on teamwork. They give student teams a focused place to develop ideas before or during prototyping, and reflect Garage@EEE's emphasis on team-based making."
+  - id: display_cabinet
+    name: Project Display Cabinet
+    aliases: ["display cabinet", "showcase"]
+    x: 7.632
+    y: -6.3388
+    ow: -0.088131
+    narration: "The Project Display Cabinet highlights past and current student work. It helps new visitors see the range of ideas that have been built here and gives context for what Garage@EEE enables."
+    faq_tags: ["projects", "inspiration"]
+  - id: lounge
+    name: Lounge
+    aliases: ["lounge area", "break area", "pantry"]
+    x: 8.583
+    y: -3.8988
+    ow: 0.99727
+    narration: "The Lounge is a relaxed space for students to take a break, socialize, and recharge during their visit to Garage@EEE."
+    faq_tags: ["relaxation", "socializing", "break area"]
   - id: top_10_office
     name: Top 10 Office
     aliases: ["office"]
-    x: -0.53
-    y: 1.68
-    ow: 0.707
+    x: 12.333
+    y: -1.6678
+    ow: 0.86357
     narration: "The Top 10 Office is tied to committee coordination, planning, and day-to-day support activity. It helps connect the operations side of Garage@EEE with the student projects happening across the space."
     faq_tags: ["committee", "support"]
-  - id: kirchoffs_pod
-    name: Kirchoff's Pod
-    aliases: ["kirchoff", "pod one"]
-    x: -0.53
-    y: -1.8
-    ow: 0.0
-    narration: "Kirchoff's Pod is one of the collaborative project pods used for discussion, iteration, and hands-on teamwork. It gives student teams a place to focus on ideas before or during prototyping."
-    faq_tags: ["project space", "collaboration"]
-  - id: maxwells_pod
-    name: Maxwell's Pod
-    aliases: ["maxwell", "pod two"]
-    x: -2.16
-    y: 1.08
-    ow: -0.707
-    narration: "Maxwell's Pod is another collaborative area that supports small-group work, planning, and project discussions. Together with the other pods, it reflects Garage@EEE's emphasis on team-based making."
-    faq_tags: ["project space", "collaboration"]
-  - id: showcase_wall
-    name: Project Showcase Wall
-    aliases: ["showcase", "showcase wall"]
-    x: 1.3967
-    y: 1.6718
-    ow: -0.924
-    narration: "The Project Showcase Wall highlights past and current student work. It helps new visitors see the range of ideas that have been built here and gives context for what Garage@EEE enables."
-    faq_tags: ["projects", "inspiration"]
-  - id: exit
-    name: Exit
-    aliases: ["end", "way out"]
-    x: 1.8241
-    y: -2.893
-    ow: -1.0
-    narration: "This is the exit and the final stop of the standard Garage@EEE tour. From here, MoreTea can either answer more questions or help direct you to a specific area again."
-    faq_tags: ["tour end"]
+  - id: electronics_workstation
+    name: Electronics Workstation
+    aliases: ["electronics", "workstation","soldering", "oscilloscope"]
+    x: 12.954
+    y: 1.1974
+    ow: 0.93824
+    narration: "The Electronics Workstation is a dedicated space for electronics prototyping, soldering, and testing. Students often come here when a project needs precise assembly and testing."
+    faq_tags: ["electronics", "soldering", "testing"]
+  - id: workshop_area
+    name: Workshop Area
+    aliases: ["Training", "Workshop", "Study","work"]
+    x: 11.798
+    y: 2.5365
+    ow: 0.24495
+    narration: "The Workshop Area is used for conducting workshops and also serves as a flexible space where students work on projects, collaborate, or study. You will often see students here developing their ideas, working on assignments, or refining prototypes."
+    faq_tags: ["3d printing", "laser cutting", "machines"]
+  - id: fabrication_and_machines_lab
+    name: Fabrication and Machines Lab
+    aliases: ["fab lab", "fabrication", "tools", "machines lab", "3D Printing", "Laser Cutting", "machines"]
+    x: 7.9221
+    y: 16.127
+    ow: 0.841
+    narration: "The Fabrication Lab and Machines Lab are side by side and together support hands-on prototype building, machine work, 3D printing, and laser cutting. This is where students turn ideas into physical parts, assemble and test prototypes, and do detailed bench-based project work."
+    faq_tags: ["fabrication", "tools", "3d printing", "laser cutting", "machines"]

@@ -2,7 +2,6 @@
 set -euo pipefail
 
 MCP_URL="${MCP_URL:-http://127.0.0.1:8765/mcp}"
-MCP_ACCEPT_HEADER="${MCP_ACCEPT_HEADER:-Accept: text/event-stream}"
 MAX_ATTEMPTS="${MAX_ATTEMPTS:-10}"
 SLEEP_SECONDS="${SLEEP_SECONDS:-2}"
 CONNECT_TIMEOUT_SECONDS="${CONNECT_TIMEOUT_SECONDS:-2}"
@@ -17,19 +16,31 @@ echo
 attempt=1
 while (( attempt <= MAX_ATTEMPTS )); do
   echo "Attempt ${attempt}/${MAX_ATTEMPTS}: checking ${MCP_URL}"
-  if output="$(curl -sS -o /dev/null -w '%{http_code}' \
-    --connect-timeout "${CONNECT_TIMEOUT_SECONDS}" \
-    --max-time "${MAX_TIME_SECONDS}" \
-    -H "${MCP_ACCEPT_HEADER}" \
-    "${MCP_URL}" 2>&1)"; then
-    http_code="${output}"
-    if [[ "${http_code}" != "000" ]]; then
-      echo "MCP endpoint reachable with HTTP ${http_code}."
-      echo "Treating tunnel/backend as reachable. Next check: MCP health."
-      exit 0
+  error_file="$(mktemp)"
+  curl_status=0
+  http_code="$(
+    curl -sS -o /dev/null -w '%{http_code}' \
+      --connect-timeout "${CONNECT_TIMEOUT_SECONDS}" \
+      --max-time "${MAX_TIME_SECONDS}" \
+      -X OPTIONS \
+      "${MCP_URL}" 2>"${error_file}"
+  )" || curl_status=$?
+  error_output="$(cat "${error_file}")"
+  rm -f "${error_file}"
+
+  if [[ "${http_code}" != "000" ]]; then
+    echo "MCP endpoint reachable with HTTP ${http_code}."
+    if (( curl_status != 0 )) && [[ -n "${error_output}" ]]; then
+      echo "curl exited with status ${curl_status} after headers arrived: ${error_output}"
     fi
+    echo "Treating tunnel/backend as reachable. Next check: MCP health."
+    exit 0
+  fi
+
+  if [[ -n "${error_output}" ]]; then
+    echo "Probe failed: ${error_output}"
   else
-    echo "Probe failed: ${output}"
+    echo "Probe failed: no HTTP response received."
   fi
 
   if (( attempt < MAX_ATTEMPTS )); then

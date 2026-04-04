@@ -86,11 +86,11 @@ class FaceRecognitionStatusProvider:
                     self._executor.shutdown(wait=False)
                 except TypeError:
                     self._executor.shutdown()
+            if self._spin_thread is not None:
+                self._spin_thread.join(timeout=2.0)
             if self._node:
                 self._node.destroy_node()
         finally:
-            if self._spin_thread is not None:
-                self._spin_thread.join(timeout=0.5)
             with self._lock:
                 self._latest_snapshot = None
             self._started = False
