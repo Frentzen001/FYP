@@ -14,12 +14,14 @@ try:
     import rclpy
     import rclpy.executors
     from rclpy.node import Node
+    from rclpy.qos import QoSPresetProfiles
 
     ROS2_AVAILABLE = True
 except ImportError:
     ROS2_AVAILABLE = False
     rclpy = None  # type: ignore[assignment]
     Node = object  # type: ignore[assignment,misc]
+    QoSPresetProfiles = None  # type: ignore[assignment,misc]
 
 try:
     from sensor_msgs.msg import CompressedImage, Image as SensorImage
@@ -31,7 +33,7 @@ except ImportError:
     SensorImage = object  # type: ignore[assignment,misc]
 
 
-CAMERA_TOPIC = "/camera/image_raw"
+CAMERA_TOPIC = "/face_camera/image_raw"
 CAMERA_TOPIC_KIND = "raw"
 SUPPORTED_CAMERA_TOPIC_KINDS = frozenset({"raw", "compressed"})
 _RAW_ENCODINGS = frozenset({"rgb8", "bgr8", "rgba8", "bgra8", "mono8"})
@@ -88,7 +90,8 @@ class CameraCaptureProvider:
 
         self._node = Node("moretea_camera_capture")
         message_type = SensorImage if self._topic_kind == "raw" else CompressedImage
-        self._node.create_subscription(message_type, self._image_topic, self._on_message, 10)
+        qos = QoSPresetProfiles.SENSOR_DATA.value
+        self._node.create_subscription(message_type, self._image_topic, self._on_message, qos)
 
         self._executor = rclpy.executors.MultiThreadedExecutor()
         self._executor.add_node(self._node)
@@ -109,11 +112,11 @@ class CameraCaptureProvider:
                     self._executor.shutdown(wait=False)
                 except TypeError:
                     self._executor.shutdown()
+            if self._spin_thread is not None:
+                self._spin_thread.join(timeout=2.0)
             if self._node:
                 self._node.destroy_node()
         finally:
-            if self._spin_thread is not None:
-                self._spin_thread.join(timeout=0.5)
             with self._lock:
                 self._latest_frame = None
             self._started = False
