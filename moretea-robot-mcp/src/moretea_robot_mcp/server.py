@@ -23,10 +23,9 @@ from .tour_navigation import TourNavigationExecutor
 from .tour_stops import TourStop, load_tour_stops, serialize_stop
 
 try:
-    from mcp import types as mcp_types
     from mcp.server.fastmcp import Context, FastMCP
     from mcp.server.session import ServerSession
-    from mcp.types import ImageContent, TextContent
+    from mcp.types import ImageContent
 except ImportError:  # pragma: no cover - lightweight test fallback
     class ServerSession:  # type: ignore[no-redef]
         pass
@@ -46,7 +45,6 @@ except ImportError:  # pragma: no cover - lightweight test fallback
             return decorator
 
     ImageContent = None  # type: ignore[assignment,misc]
-    TextContent = None  # type: ignore[assignment,misc]
 
 
 @dataclass
@@ -280,7 +278,7 @@ def capture_image(ctx: Context[ServerSession, AppContext]):
     try:
         result = ctx.request_context.lifespan_context.camera.capture_image()
     except RuntimeError as exc:
-        return [TextContent(type="text", text=str(_error_payload(str(exc))))]
+        return _error_payload(str(exc))
 
     return [ImageContent(type="image", data=result["image_base64"], mimeType="image/jpeg")]
 
