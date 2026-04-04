@@ -276,25 +276,13 @@ def express_emotion(mood: str, ctx: Context[ServerSession, AppContext]) -> dict[
 
 @mcp.tool()
 def capture_image(ctx: Context[ServerSession, AppContext]):
-    """Return the latest buffered camera frame as an image the model can see.
-
-    Returns an MCP image content block so vision-capable LLMs receive the actual
-    pixel data, plus a text block with capture metadata (dimensions, timestamp).
-    """
+    """Return the latest buffered camera frame as an image the model can see."""
     try:
         result = ctx.request_context.lifespan_context.camera.capture_image()
     except RuntimeError as exc:
         return [TextContent(type="text", text=str(_error_payload(str(exc))))]
 
-    meta_text = (
-        f"Camera frame captured at {result.get('captured_at', 'unknown')}. "
-        f"Resolution: {result.get('width')}x{result.get('height')} px. "
-        f"Topic: {result.get('source_topic')}."
-    )
-    return [
-        ImageContent(type="image", data=result["image_base64"], mimeType="image/jpeg"),
-        TextContent(type="text", text=meta_text),
-    ]
+    return [ImageContent(type="image", data=result["image_base64"], mimeType="image/jpeg")]
 
 
 @mcp.tool()
