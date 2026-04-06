@@ -6,10 +6,24 @@ It covers the full cross-machine flow:
 
 - robot bringup and Nav2
 - robot-side MCP server
-- SSH tunnel from the OpenClaw PC
-- Speaches
-- barebone OpenClaw voice worker
+- SSH tunnel (MCP) from the remote desktop to robot PC
+- Speaches on the remote desktop (GPU)
+- SSH tunnel (Speaches) from the robot PC to remote desktop
+- barebone OpenClaw voice worker on the robot PC
 - MCP verification before voice prompts
+
+**Audio split topology:**
+
+```
+Remote Desktop (GPU)              Robot PC
+─────────────────────             ─────────────────────────────
+Speaches :8000        ←── tunnel ── localhost:8000 (voice worker)
+OpenClaw LLM                       openclaw_barebone.py
+openclaw_tunnel.sh                 mic + speaker (local hardware)
+  (→ Robot PC :8765)               ROS2 + Robot MCP :8765
+```
+
+The Speaches models (STT/TTS) run on the remote desktop GPU. The voice worker runs on the robot PC alongside the physical mic and speaker. An SSH tunnel makes `localhost:8000` on the robot PC transparently reach the remote desktop's Speaches.
 
 For repo-local concepts, use:
 
@@ -34,13 +48,7 @@ cd /home/frentzen/FYP
 ./tmuxinator/install_profiles.sh
 ```
 
-Robot PC:
-
-```bash
-tmuxinator start moretea_robot
-```
-
-OpenClaw PC:
+Remote desktop (starts Speaches + MCP tunnel to robot):
 
 ```bash
 export ROBOT_USER=<robot-user>
@@ -48,9 +56,18 @@ export ROBOT_HOST=<robot-ip>
 tmuxinator start moretea_voice
 ```
 
-OpenClaw-side requirement:
+Robot PC (starts ROS2, MCP, Speaches tunnel, voice worker):
 
-- `autossh` installed so the visible `tunnel` pane can reconnect after short drops
+```bash
+export DESKTOP_HOST=<remote-desktop-ip>
+export DESKTOP_USER=<ssh-username-on-desktop>
+tmuxinator start moretea_robot
+```
+
+`autossh` requirements:
+
+- remote desktop: `autossh` for the MCP tunnel pane (`openclaw_tunnel.sh`)
+- robot PC: `autossh` for the Speaches tunnel pane (`speaches_tunnel.sh`)
 
 Tmuxinator details:
 
@@ -60,12 +77,16 @@ Tmuxinator details:
 
 If you need to launch manually, keep this order:
 
-1. Robot bringup and Nav2
-2. Robot MCP server
-3. SSH tunnel from the OpenClaw PC
-4. Speaches on the OpenClaw PC
-5. barebone OpenClaw worker
-6. MCP `health` check before voice prompts
+**Remote desktop:**
+1. Speaches (GPU)
+2. MCP tunnel → Robot PC (port 8765)
+
+**Robot PC:**
+3. Robot bringup and Nav2
+4. Robot MCP server
+5. Speaches tunnel → Remote desktop (port 8000)
+6. Barebone OpenClaw voice worker (after tunnel is up)
+7. MCP `health` check before voice prompts
 
 ## Robot PC
 
@@ -132,9 +153,9 @@ cd /home/frentzen/FYP/moretea-robot-mcp
 MORETEA_BYPASS_NAV2_ACTIVE_WAIT=0 ./scripts/run_robot_mcp.sh
 ```
 
-## OpenClaw PC
+## Remote Desktop
 
-### Open the SSH tunnel
+### Open the MCP tunnel (remote desktop → robot PC)
 
 ```bash
 cd /home/frentzen/FYP/moretea-robot-mcp
@@ -148,7 +169,7 @@ Expected behavior:
 - the startup banner shows the robot host, SSH user, and forwarded ports
 - `autossh` retries after short drops instead of leaving the tunnel dead silently
 
-OpenClaw PC requirement:
+Remote desktop requirement:
 
 - `autossh` must be installed for the visible tunnel workflow
 - SSH key-based login to the robot PC is strongly recommended so reconnects do not get stuck on a password prompt
@@ -201,12 +222,49 @@ Optional probe overrides:
 - `CONNECT_TIMEOUT_SECONDS` to change the per-attempt connect timeout
 - `MAX_TIME_SECONDS` to change the total per-attempt curl timeout
 
-### Start the voice-side tools
+### Start Speaches (remote desktop)
 
 Prerequisites:
 
 - Docker installed and usable by the current user
-- valid `agent-starter-python/.env.local`
+
+```bash
+cd /home/frentzen/FYP/agent-starter-python
+./scripts/run_speaches.sh
+```
+
+Verify Speaches is ready:
+
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+### Start the Speaches tunnel (robot PC → remote desktop)
+
+Run this on the **robot PC** after Speaches is up on the remote desktop:
+
+```bash
+cd /home/frentzen/FYP/moretea-robot-mcp
+DESKTOP_HOST=<remote-desktop-ip> DESKTOP_USER=<ssh-user> ./scripts/speaches_tunnel.sh
+```
+
+Robot PC requirement:
+
+- `autossh` must be installed
+- SSH key-based login to the remote desktop is strongly recommended
+
+Verify tunnel from robot PC:
+
+```bash
+curl http://127.0.0.1:8000/v1/models
+```
+
+### Start the voice worker (robot PC)
+
+Prerequisites:
+
+- Speaches tunnel is up (port 8000 reachable on robot PC)
+- valid `agent-starter-python/.env.local` on the robot PC
 
 Create it from the template if needed:
 
@@ -215,43 +273,32 @@ cd /home/frentzen/FYP/agent-starter-python
 cp .env.example .env.local
 ```
 
-Speaches:
+Key values in `.env.local` on robot PC:
 
-```bash
-cd /home/frentzen/FYP/agent-starter-python
-./scripts/run_speaches.sh
+```env
+USE_LOCAL_MODELS=1
+LOCAL_STT_BASE_URL=http://127.0.0.1:8000/v1
+LOCAL_TTS_BASE_URL=http://127.0.0.1:8000/v1
+MORETEA_OPENCLAW_URL=http://<remote-desktop-ip>:<port>/v1
 ```
 
-Barebone worker:
+Start the worker:
 
 ```bash
 cd /home/frentzen/FYP/agent-starter-python
 ./scripts/run_openclaw_barebone.sh
 ```
 
-Thinking cue check:
+Thinking cue:
 
-- the barebone worker now plays its short acceptance chirp through the local machine speaker
-- no LiveKit room join is required to hear it during console/dev runs
-
-Or combined:
-
-```bash
-cd /home/frentzen/FYP/agent-starter-python
-./scripts/dev_voice_stack.sh
-```
+- the barebone worker plays its short acceptance chirp through the **robot PC speaker**
+- this is the intended behavior — the cue plays on the same machine as the mic and speaker
 
 Before relying on robot tools:
 
-- confirm the SSH tunnel terminal or tmux `tunnel` pane is running cleanly
-- run `./scripts/probe_tunneled_mcp.sh` from `moretea-robot-mcp`
+- confirm the MCP tunnel pane (remote desktop) is running cleanly
+- run `./scripts/probe_tunneled_mcp.sh` from `moretea-robot-mcp` on remote desktop
 - call MCP `health`
-
-Verify Speaches:
-
-```bash
-curl http://127.0.0.1:8000/v1/models
-```
 
 ## OpenClaw Agent Config
 
@@ -387,31 +434,55 @@ Check:
 - `./scripts/probe_tunneled_mcp.sh` works on the OpenClaw PC
 - `health` works before you test prompts
 
-### `autossh` is missing on the OpenClaw PC
+### `autossh` is missing on the remote desktop or robot PC
 
 Symptoms:
 
 - the `tunnel` pane exits immediately with an `autossh is required` message
 
-Fix:
+Fix (remote desktop — MCP tunnel):
 
-- install `autossh` on the OpenClaw PC
+- install `autossh` on the remote desktop
 - restart the `tunnel` pane or relaunch `tmuxinator start moretea_voice`
+
+Fix (robot PC — Speaches tunnel):
+
+- install `autossh` on the robot PC
+- restart the `speaches_tunnel` pane or relaunch `tmuxinator start moretea_robot`
+
+### Speaches tunnel is up but voice worker cannot reach STT/TTS
+
+Symptoms:
+
+- `curl http://127.0.0.1:8000/v1/models` on the robot PC fails or times out
+- voice worker logs STT/TTS connection errors
+
+Check:
+
+- Speaches is running on the remote desktop (`curl http://127.0.0.1:8000/v1/models` on remote desktop)
+- the `speaches_tunnel` pane is open and not repeatedly failing
+- `DESKTOP_HOST` and `DESKTOP_USER` are set correctly
+- SSH key-based login from robot PC → remote desktop works without a password prompt
 
 ### Tunnel prompts for a password or fails with `Permission denied`
 
 Symptoms:
 
-- the `tunnel` pane asks for an SSH password
+- a `tunnel` pane asks for an SSH password
 - reconnects are not automatic
 - SSH eventually fails with `Permission denied`
 
-Check:
+For the MCP tunnel (remote desktop → robot PC):
 
 - `ROBOT_USER` matches the actual SSH username on the robot PC
 - `ROBOT_HOST` points at the robot PC IP or hostname
-- plain `ssh <robot-user>@<robot-ip>` works from the OpenClaw PC
-- SSH key-based login is configured so `autossh` can reconnect without manual input
+- plain `ssh <robot-user>@<robot-ip>` works from the remote desktop without a password
+
+For the Speaches tunnel (robot PC → remote desktop):
+
+- `DESKTOP_USER` matches the actual SSH username on the remote desktop
+- `DESKTOP_HOST` points at the remote desktop IP or hostname
+- plain `ssh <desktop-user>@<desktop-ip>` works from the robot PC without a password
 
 ### Tunnel is open but the robot MCP backend is unavailable
 

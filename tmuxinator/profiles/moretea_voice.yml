@@ -5,13 +5,15 @@ windows:
   - precheck:
       panes:
         - >-
-          bash -lc 'echo "Before starting the voice stack, export ROBOT_USER and ROBOT_HOST.";
-          echo "Example:";
+          bash -lc 'echo "Remote desktop profile: Speaches (GPU) + MCP tunnel to robot PC.";
+          echo "The barebone voice worker now runs on the robot PC (moretea_robot profile).";
+          echo;
+          echo "Before starting, export ROBOT_USER and ROBOT_HOST:";
           echo "  export ROBOT_USER=<robot-user>";
           echo "  export ROBOT_HOST=<robot-ip>";
           echo;
-          echo "Robot stack should already be up before this profile starts.";
-          echo "First MCP check after launch: health";
+          echo "Robot stack must be up before this profile starts.";
+          echo "First MCP tool to call after launch: health";
           echo;
           exec bash'
   - tunnel:
@@ -25,15 +27,10 @@ windows:
           bash -lc 'cd /home/frentzen/FYP/agent-starter-python &&
           ./scripts/run_speaches.sh;
           exec bash'
-  - barebone:
-      panes:
-        - >-
-          bash -lc 'cd /home/frentzen/FYP/agent-starter-python &&
-          ./scripts/run_openclaw_barebone.sh'
   - checks:
       panes:
         - >-
-          bash -lc 'echo "Tunnel check:";
+          bash -lc 'echo "Tunnel check (MCP):";
           echo "  /home/frentzen/FYP/moretea-robot-mcp/scripts/probe_tunneled_mcp.sh";
           echo;
           echo "Healthy tunnel means:";
@@ -41,9 +38,10 @@ windows:
           echo "  2. the MCP probe succeeds";
           echo "  3. MCP health succeeds before prompt testing";
           echo;
-          echo "Speaches check:";
+          echo "Speaches check (local GPU):";
           echo "  curl http://127.0.0.1:8000/v1/models";
           echo;
+          echo "Voice worker runs on the ROBOT PC (moretea_robot profile).";
           echo "First MCP tool to call: health";
           echo;
           exec bash'
