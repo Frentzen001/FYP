@@ -1,3 +1,6 @@
 [submodule "agent-starter-python"]
 	path = agent-starter-python
 	url = https://github.com/Frentzen001/agent-starter-python.git
+[submodule "moretea-openclaw-docker"]
+	path = moretea-openclaw-docker
+	url = git@github.com:Frentzen001/moretea-openclaw-docker.git
