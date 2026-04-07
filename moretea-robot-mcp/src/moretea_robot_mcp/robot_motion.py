@@ -134,8 +134,15 @@ class RobotMotionProvider:
             self._motion_active = True
 
         try:
-            self._publish_twist(safe_linear, safe_angular)
-            time.sleep(safe_duration)
+            # Re-publish at 20 Hz for the full duration — satisfies the robot's cmd_vel watchdog
+            # (most platforms stop the robot if no new cmd_vel arrives within ~0.5 s).
+            end_time = time.monotonic() + safe_duration
+            while True:
+                self._publish_twist(safe_linear, safe_angular)
+                remaining = end_time - time.monotonic()
+                if remaining <= 0:
+                    break
+                time.sleep(min(0.05, remaining))
             self._publish_zero()
         finally:
             with self._lock:
@@ -210,10 +217,9 @@ class RobotMotionProvider:
         travelled_m = 0.0
 
         try:
-            self._publish_twist(linear_x, 0.0)
-
             while True:
-                time.sleep(0.05)  # 20 Hz poll
+                self._publish_twist(linear_x, 0.0)  # re-publish at 20 Hz — satisfies cmd_vel watchdog
+                time.sleep(0.05)
 
                 pos = pos_fn()
                 if pos is None:
@@ -308,10 +314,9 @@ class RobotMotionProvider:
         start_time = time.monotonic()
 
         try:
-            self._publish_twist(0.0, angular_z)
-
             while True:
-                time.sleep(0.05)  # 20 Hz poll
+                self._publish_twist(0.0, angular_z)  # re-publish at 20 Hz — satisfies cmd_vel watchdog
+                time.sleep(0.05)
 
                 current_yaw = yaw_fn()
                 if current_yaw is None:
