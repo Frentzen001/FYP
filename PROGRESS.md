@@ -46,6 +46,17 @@ Current navigation note:
 
 ## Recent Milestones
 
+### 5. Unified agent memory and fixed per-person recognition
+
+Consolidated all agent memory into a single `workspace/MEMORY.md` file with three sections (`# CORRECTIONS`, `# EXPERIENCES`, `# PEOPLE`). Previously the agent wrote to `corrections.md`, `experience.md`, and `memory/people/{name}.md` separately — the per-person files never worked because the `memory/people/` directory did not exist in the container, causing silent write failures.
+
+Changes:
+- `SOUL.md` restructured so facial recognition (`moretea_robot_get_recognized_faces`) runs as STEP 0 before any other logic every turn, ensuring personalized responses based on recognised visitor history
+- Per-person conversation notes accumulate in MEMORY.md `# PEOPLE` section (unbounded, no date grouping)
+- `HEARTBEAT.md` updated to consolidate into the same unified file
+- `Dockerfile` and `docker-entrypoint.sh` updated to seed `MEMORY.md` on first container start
+- Existing data from `corrections.md` and `experience.md` migrated into the new file; old files removed
+
 ### 1. Tmuxinator dev launchers
 
 Added repo-tracked tmuxinator profiles plus an installer so development startup is repeatable across the robot PC and OpenClaw PC.
