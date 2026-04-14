@@ -194,21 +194,23 @@ mcp = FastMCP(
         "Robot-side control server for MoreTea. "
         "Use health to verify ROS readiness. "
         "Use express_emotion to change the robot eyes. "
-        "Use move for timed velocity control, move_distance for fixed-distance travel, stop_motion to halt immediately. "
+        "Use move_distance for fixed-distance travel, rotate_angle for in-place rotation, stop_motion to halt immediately. "
         "Use get_odometry for current position, get_battery for battery state, get_laser_scan for nearest obstacle distance. "
         "Use capture_image to fetch the latest buffered camera frame. "
         "Use get_recognized_faces to inspect the latest face-recognition snapshot, register_face to save a newly met person. "
         "Use list_tour_stops to inspect known tour locations, get_navigation_status to inspect Nav2 state, cancel_navigation to halt navigation. "
-        "NAVIGATION PATTERN (mandatory): "
-        "Step 1 - call start_navigation_to_stop(stop_id); it returns immediately with an action_id. "
-        "Step 2 - immediately tell the user navigation has started and the robot is on its way. "
-        "Step 3 - call wait_for_navigation_action(action_id, max_wait_s=20) to await completion. "
-        "The response always includes an event field — handle each case: "
-        "If event='replan': the robot has rerouted around an obstacle — speak last_event_note to reassure the user (e.g. 'I'm adjusting my route but we're still heading to the right place'), then call wait_for_navigation_action again with the same action_id. "
-        "If event='recovery': the robot is recovering from a navigation issue — speak last_event_note to reassure the user, then call wait_for_navigation_action again. "
-        "If timed_out=True (event=None): still navigating — speak a brief progress update using distance_remaining_m, then call wait_for_navigation_action again. "
-        "If event=None and timed_out=False: terminal state reached — report the outcome to the user. "
-        "Use get_navigation_action_status for a one-shot status check without waiting."
+        "NAVIGATION (mandatory — subagent pattern only): "
+        "Never call navigate_to_stop from the main interactive turn. Always spawn a background subagent via sessions_spawn and delegate navigation to it. "
+        "The subagent calls navigate_to_stop(stop_id) to start navigation, then calls navigate_to_stop(stop_id, action_id=...) to resume after each return. "
+        "On event='replan' or 'recovery': speak last_event_note to the user via sessions_send, then call navigate_to_stop again with the same action_id. "
+        "On timed_out=True: call navigate_to_stop again silently with the same action_id (no user message needed). "
+        "On terminal status (completed/failed/cancelled): announce the outcome, done. "
+        "MOTION (mandatory — subagent pattern only): "
+        "Never call move_distance or rotate_angle from the main interactive turn — they block for up to 10 s. "
+        "Always spawn a background subagent via sessions_spawn. "
+        "The subagent calls move_distance(distance_m=...) for translation or rotate_angle(angle_deg=...) for rotation — "
+        "each blocks until complete, then reports the outcome to the main session via sessions_send. "
+        "stop_motion may be called directly from the main turn for emergency stops."
     ),
     stateless_http=True,
     json_response=True,
@@ -350,48 +352,95 @@ def list_tour_stops(ctx: Context[ServerSession, AppContext]) -> dict[str, object
     }
 
 
-def navigate_to_stop(stop_id: str, ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
-    """NOT an MCP tool. Blocks until navigation completes. Use start_navigation_to_stop + wait_for_navigation_action instead."""
-    lifespan = ctx.request_context.lifespan_context
-    target = next((stop for stop in lifespan.tour_stops if stop.id == stop_id.strip()), None)
-    if target is None:
-        available = [stop.id for stop in lifespan.tour_stops]
-        return _error_payload(
-            f"Unknown stop_id '{stop_id}'.",
-            stop_id=stop_id,
-            available_stop_ids=available,
-        )
-    return lifespan.tour_navigation.navigate_to_stop(target)
+_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
+_NAV_STEP_CAP_S = 120.0  # 2 min — SSH loopback has no gateway timeout constraint
+_NAV_POLL_S = 0.05
 
 
 @mcp.tool()
-def start_navigation_to_stop(
+def navigate_to_stop(
     stop_id: str,
     ctx: Context[ServerSession, AppContext],
-    session_id: str | None = None,
-    turn_id: str | None = None,
+    action_id: str | None = None,
+    max_wait_s: float = 20.0,
 ) -> dict[str, object]:
-    """Start one Humble Nav2 navigation action for a configured tour stop."""
+    """Navigate to a named tour stop. Blocks until an event occurs or navigation terminates.
+
+    First call: provide stop_id only — starts navigation, waits for the first event or terminal.
+    Subsequent calls: provide the same stop_id AND the action_id from the previous response —
+    resumes waiting for the in-progress navigation.
+
+    Returns {action_id, status, event, timed_out, last_event_note, distance_remaining_m, ...}:
+      event='replan':    robot rerouted — speak last_event_note via sessions_send, call navigate_to_stop(stop_id, action_id=...) again.
+      event='recovery':  robot recovering — speak last_event_note via sessions_send, call navigate_to_stop(stop_id, action_id=...) again.
+      timed_out=True:    still navigating, no event — call navigate_to_stop(stop_id, action_id=...) again silently.
+      terminal status (completed/failed/cancelled): report outcome, done.
+
+    max_wait_s: max seconds to block per call. Capped at 120s (2 min).
+    """
     lifespan = ctx.request_context.lifespan_context
-    target = next((stop for stop in lifespan.tour_stops if stop.id == stop_id.strip()), None)
-    if target is None:
-        available = [stop.id for stop in lifespan.tour_stops]
-        return _error_payload(
-            f"Unknown stop_id '{stop_id}'.",
-            stop_id=stop_id,
-            available_stop_ids=available,
-        )
-    return lifespan.tour_navigation.start_navigation_to_stop(
-        target,
-        session_id=session_id,
-        turn_id=turn_id,
-    )
+    tour_navigation = lifespan.tour_navigation
 
+    if action_id is None:
+        # Start new navigation
+        target = next((s for s in lifespan.tour_stops if s.id == stop_id.strip()), None)
+        if target is None:
+            return _error_payload(
+                f"Unknown stop_id '{stop_id}'.",
+                stop_id=stop_id,
+                available_stop_ids=[s.id for s in lifespan.tour_stops],
+            )
+        started = tour_navigation.start_navigation_to_stop(target)
+        if not started.get("success"):
+            return started
+        action_id = started["action_id"]
 
-@mcp.tool()
-def get_navigation_action_status(action_id: str, ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
-    """Inspect one navigation action by action_id."""
-    return ctx.request_context.lifespan_context.tour_navigation.get_navigation_action_status(action_id)
+    capped = min(float(max_wait_s), _NAV_STEP_CAP_S)
+    deadline = time.monotonic() + capped
+
+    # Establish baseline event counts before polling.
+    baseline = tour_navigation.get_navigation_action_status(action_id)
+    if not baseline.get("success"):
+        return {**baseline, "action_id": action_id}
+    baseline_replan: int = baseline.get("replan_count", 0) or 0
+    baseline_recovery: int = baseline.get("recovery_count", 0) or 0
+
+    def _result(snap: dict[str, object], *, timed_out: bool, event: str | None) -> dict[str, object]:
+        return {
+            "success": True,
+            "action_id": action_id,
+            "stop_id": snap.get("stop_id") or stop_id,
+            "stop_name": snap.get("stop_name"),
+            "status": snap.get("status"),
+            "event": event,
+            "timed_out": timed_out,
+            "distance_remaining_m": snap.get("distance_remaining_m"),
+            "last_event_note": snap.get("last_event_note"),
+            "detail": snap.get("detail"),
+        }
+
+    while True:
+        snap = tour_navigation.get_navigation_action_status(action_id)
+        if not snap.get("success"):
+            return {**snap, "action_id": action_id, "timed_out": False, "event": None}
+
+        status = snap.get("status")
+        # Terminal check first — completion beats any concurrent event.
+        if status in _TERMINAL_STATUSES:
+            return _result(snap, timed_out=False, event=None)
+
+        # Event checks — return early so the subagent can send a reassurance via sessions_send.
+        cur_replan: int = snap.get("replan_count", 0) or 0
+        cur_recovery: int = snap.get("recovery_count", 0) or 0
+        if cur_replan > baseline_replan:
+            return _result(snap, timed_out=False, event="replan")
+        if cur_recovery > baseline_recovery:
+            return _result(snap, timed_out=False, event="recovery")
+
+        if time.monotonic() >= deadline:
+            return _result(snap, timed_out=True, event=None)
+
+        time.sleep(_NAV_POLL_S)
 
 
 @mcp.tool()
@@ -401,125 +450,6 @@ def cancel_navigation(
 ) -> dict[str, object]:
     """Cancel any active Humble Nav2 navigation started through this server."""
     return ctx.request_context.lifespan_context.tour_navigation.cancel_navigation(action_id=action_id)
-
-
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
-_WAIT_MAX_CAP_S = 90.0   # loopback via SSH tunnel — no real gateway timeout constraint
-_WAIT_POLL_INTERVAL_S = 0.05
-
-
-@mcp.tool()
-def wait_for_navigation_action(
-    action_id: str,
-    ctx: Context[ServerSession, AppContext],
-    max_wait_s: float = 20.0,
-) -> dict[str, object]:
-    """Poll until a terminal state, a reroute/recovery event, or max_wait_s elapses.
-
-    Returns early in four situations:
-    - Terminal state reached (completed/failed/cancelled/timed_out): event=None, timed_out=False
-    - New reroute detected: event="replan", timed_out=False
-    - New recovery detected: event="recovery", timed_out=False
-    - max_wait_s expired with no terminal state or event: event=None, timed_out=True
-
-    When event="replan" or "recovery": speak last_event_note to reassure the user
-    (e.g. "I'm taking a slightly different route, still heading to the right place"),
-    then call wait_for_navigation_action again with the same action_id.
-
-    When timed_out=True: speak a brief progress update using distance_remaining_m,
-    then call again with the same action_id.
-
-    action_id: the action_id returned by start_navigation_to_stop.
-    max_wait_s: maximum seconds to block. Clamped to 25s to stay under HTTP timeouts.
-    """
-    tour_navigation = ctx.request_context.lifespan_context.tour_navigation
-    capped_wait = min(float(max_wait_s), _WAIT_MAX_CAP_S)
-    deadline = time.monotonic() + capped_wait
-
-    # Baseline snapshot — establishes event counts before we start watching.
-    baseline = tour_navigation.get_navigation_action_status(action_id)
-    if not baseline.get("success"):
-        return {
-            "success": False,
-            "timed_out": False,
-            "event": None,
-            "status": baseline.get("status", "failed"),
-            "error": baseline.get("error"),
-            "distance_remaining_m": None,
-            "detail": baseline.get("error"),
-        }
-    baseline_recovery: int = baseline.get("recovery_count", 0) or 0
-    baseline_replan: int = baseline.get("replan_count", 0) or 0
-
-    def _snapshot(snap: dict[str, object], *, timed_out: bool, event: str | None) -> dict[str, object]:
-        return {
-            "success": True,
-            "timed_out": timed_out,
-            "event": event,
-            "status": snap.get("status"),
-            "distance_remaining_m": snap.get("distance_remaining_m"),
-            "detail": snap.get("detail"),
-            "recovery_count": snap.get("recovery_count", 0),
-            "replan_count": snap.get("replan_count", 0),
-            "last_event_note": snap.get("last_event_note"),
-            "stop_id": snap.get("stop_id"),
-            "stop_name": snap.get("stop_name"),
-        }
-
-    while True:
-        snapshot = tour_navigation.get_navigation_action_status(action_id)
-        if not snapshot.get("success"):
-            return {
-                "success": False,
-                "timed_out": False,
-                "event": None,
-                "status": snapshot.get("status", "failed"),
-                "error": snapshot.get("error"),
-                "distance_remaining_m": None,
-                "detail": snapshot.get("error"),
-            }
-
-        status = snapshot.get("status")
-        # Terminal check first — completion beats any concurrent event.
-        if status in _TERMINAL_STATUSES:
-            return _snapshot(snapshot, timed_out=False, event=None)
-
-        # Event checks — return immediately so the LLM can speak a reassurance.
-        current_replan: int = snapshot.get("replan_count", 0) or 0
-        current_recovery: int = snapshot.get("recovery_count", 0) or 0
-        if current_replan > baseline_replan:
-            return _snapshot(snapshot, timed_out=False, event="replan")
-        if current_recovery > baseline_recovery:
-            return _snapshot(snapshot, timed_out=False, event="recovery")
-
-        if time.monotonic() >= deadline:
-            return _snapshot(snapshot, timed_out=True, event=None)
-
-        time.sleep(_WAIT_POLL_INTERVAL_S)
-
-
-@mcp.tool()
-def move(
-    ctx: Context[ServerSession, AppContext],
-    linear_x: float = 0.0,
-    angular_z: float = 0.0,
-    duration_s: float = 1.0,
-) -> dict[str, object]:
-    """Publish a velocity command to /cmd_vel for duration_s seconds, then stop.
-
-    linear_x: forward speed in m/s (negative = backward). Clamped to ±0.4 m/s.
-    angular_z: turning rate in rad/s (positive = left). Clamped to ±0.8 rad/s.
-    duration_s: how long to move, in seconds. Max 10s.
-    Use for open-loop motion when a named tour stop is not the target.
-    """
-    try:
-        return ctx.request_context.lifespan_context.motion.move(
-            linear_x=linear_x,
-            angular_z=angular_z,
-            duration_s=duration_s,
-        )
-    except RuntimeError as exc:
-        return _error_payload(str(exc))
 
 
 @mcp.tool()
