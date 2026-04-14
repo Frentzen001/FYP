@@ -54,11 +54,11 @@ stops:
     ow: 0.24495
     narration: "The Workshop Area is used for conducting workshops and also serves as a flexible space where students work on projects, collaborate, or study. You will often see students here developing their ideas, working on assignments, or refining prototypes."
     faq_tags: ["3d printing", "laser cutting", "machines"]
-  - id: fabrication_and_machines_lab
-    name: Fabrication and Machines Lab
+  - id: fabrication_and_machines_room
+    name: Fabrication and Machines Room
     aliases: ["fab lab", "fabrication", "tools", "machines lab", "3D Printing", "Laser Cutting", "machines"]
     x: 7.9221
     y: 16.127
     ow: 0.841
-    narration: "The Fabrication Lab and Machines Lab are side by side and together support hands-on prototype building, machine work, 3D printing, and laser cutting. This is where students turn ideas into physical parts, assemble and test prototypes, and do detailed bench-based project work."
+    narration: "The Fabrication Room and Machines Room are side by side and together support hands-on prototype building, machine work, 3D printing, and laser cutting. This is where students turn ideas into physical parts, assemble and test prototypes, and do detailed bench-based project work."
     faq_tags: ["fabrication", "tools", "3d printing", "laser cutting", "machines"]
