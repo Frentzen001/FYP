@@ -4,6 +4,8 @@ import asyncio
 from types import SimpleNamespace
 from unittest.mock import patch
 
+import pytest
+
 from moretea_robot_mcp import server
 from moretea_robot_mcp.tour_stops import TourStop
 
@@ -322,6 +324,9 @@ class FakeMotion:
     def __init__(self) -> None:
         self.started = False
         self.shutdown_called = False
+        self.move_distance_calls = 0
+        self.rotate_angle_calls = 0
+        self.stop_calls = 0
         self.health_payload = {
             "success": True,
             "ros_ready": False,
@@ -331,6 +336,19 @@ class FakeMotion:
             "motion_active": False,
             "startup_error": None,
         }
+        self.move_distance_payload = {
+            "success": True,
+            "requested_distance_m": 1.0,
+            "actual_distance_m": 1.0,
+            "timed_out": False,
+        }
+        self.rotate_angle_payload = {
+            "success": True,
+            "requested_angle_deg": 90.0,
+            "actual_angle_deg": 90.0,
+            "timed_out": False,
+        }
+        self.stop_payload = {"success": True, "detail": "Zero velocity published."}
 
     def start(self) -> None:
         self.started = True
@@ -343,13 +361,22 @@ class FakeMotion:
         return dict(self.health_payload)
 
     def move_distance(self, *_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"success": True, "requested_distance_m": 1.0, "actual_distance_m": 1.0, "timed_out": False}
+        self.move_distance_calls += 1
+        if isinstance(self.move_distance_payload, Exception):
+            raise self.move_distance_payload
+        return dict(self.move_distance_payload)
 
     def rotate_angle(self, *_args: object, **_kwargs: object) -> dict[str, object]:
-        return {"success": True, "requested_angle_deg": 90.0, "actual_angle_deg": 90.0, "timed_out": False}
+        self.rotate_angle_calls += 1
+        if isinstance(self.rotate_angle_payload, Exception):
+            raise self.rotate_angle_payload
+        return dict(self.rotate_angle_payload)
 
     def stop(self) -> dict[str, object]:
-        return {"success": True, "detail": "Zero velocity published."}
+        self.stop_calls += 1
+        if isinstance(self.stop_payload, Exception):
+            raise self.stop_payload
+        return dict(self.stop_payload)
 
 
 class FakeSensors:
@@ -405,6 +432,12 @@ def _app_context_factory(**kwargs: object):
 
 
 server.AppContext = _app_context_factory  # type: ignore[assignment]
+
+
+@pytest.fixture(autouse=True)
+def clear_motion_dedup_cache() -> None:
+    with server._motion_dedup_lock:
+        server._motion_dedup_cache.clear()
 
 
 def make_ctx(app_context: server.AppContext, *, meta: dict[str, object] | None = None):
@@ -844,6 +877,212 @@ def test_move_distance_emits_session_correlation_when_meta_provided() -> None:
     assert observability.events[0]["raw"]["session_id"] == "child-move-1"
     assert observability.events[0]["raw"]["parent_session_id"] == "main"
     assert observability.events[1]["raw"]["turn_id"] == "turn-move-1"
+
+
+def test_rotate_angle_deduplicates_exact_retry_for_same_turn() -> None:
+    observability = FakeObservability()
+    motion = FakeMotion()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=observability,
+            tour_stops=(),
+        ),
+        meta={"turn_id": "turn-rotate-same"},
+    )
+
+    first = server.rotate_angle(ctx, angle_deg=5.0)
+    second = server.rotate_angle(ctx, angle_deg=5.0)
+
+    assert first["success"] is True
+    assert "deduplicated" not in first
+    assert second["success"] is True
+    assert second["deduplicated"] is True
+    assert motion.rotate_angle_calls == 1
+    assert observability.events[3]["raw"]["turn_id"] == "turn-rotate-same"
+
+
+def test_move_distance_deduplicates_exact_retry_for_same_turn() -> None:
+    motion = FakeMotion()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=FakeObservability(),
+            tour_stops=(),
+        ),
+        meta={"turn_id": "turn-move-same"},
+    )
+
+    first = server.move_distance(ctx, distance_m=0.5)
+    second = server.move_distance(ctx, distance_m=0.5)
+
+    assert first["success"] is True
+    assert second["deduplicated"] is True
+    assert motion.move_distance_calls == 1
+
+
+def test_stop_motion_deduplicates_exact_retry_for_same_turn() -> None:
+    motion = FakeMotion()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=FakeObservability(),
+            tour_stops=(),
+        ),
+        meta={"turn_id": "turn-stop-same"},
+    )
+
+    first = server.stop_motion(ctx)
+    second = server.stop_motion(ctx)
+
+    assert first["success"] is True
+    assert second["deduplicated"] is True
+    assert motion.stop_calls == 1
+
+
+def test_rotate_angle_does_not_deduplicate_when_args_differ() -> None:
+    motion = FakeMotion()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=FakeObservability(),
+            tour_stops=(),
+        ),
+        meta={"turn_id": "turn-rotate-different-args"},
+    )
+
+    first = server.rotate_angle(ctx, angle_deg=5.0)
+    second = server.rotate_angle(ctx, angle_deg=10.0)
+
+    assert first["success"] is True
+    assert "deduplicated" not in second
+    assert motion.rotate_angle_calls == 2
+
+
+def test_rotate_angle_does_not_deduplicate_across_turns() -> None:
+    motion = FakeMotion()
+    app = server.AppContext(
+        publisher=FakePublisher(),
+        camera=FakeCamera(),
+        face_recognition=FakeFaceRecognition(),
+        face_registration=FakeFaceRegistration(),
+        navigation=FakeNavigation(),
+        tour_navigation=FakeTourNavigation(),
+        motion=motion,
+        observability=FakeObservability(),
+        tour_stops=(),
+    )
+    first_ctx = make_ctx(app, meta={"turn_id": "turn-rotate-1"})
+    second_ctx = make_ctx(app, meta={"turn_id": "turn-rotate-2"})
+
+    first = server.rotate_angle(first_ctx, angle_deg=5.0)
+    second = server.rotate_angle(second_ctx, angle_deg=5.0)
+
+    assert first["success"] is True
+    assert "deduplicated" not in second
+    assert motion.rotate_angle_calls == 2
+
+
+def test_rotate_angle_does_not_deduplicate_without_turn_id() -> None:
+    motion = FakeMotion()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=FakeObservability(),
+            tour_stops=(),
+        )
+    )
+
+    first = server.rotate_angle(ctx, angle_deg=5.0)
+    second = server.rotate_angle(ctx, angle_deg=5.0)
+
+    assert first["success"] is True
+    assert "deduplicated" not in second
+    assert motion.rotate_angle_calls == 2
+
+
+def test_rotate_angle_dedup_cache_expires_after_ttl() -> None:
+    motion = FakeMotion()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=FakeObservability(),
+            tour_stops=(),
+        ),
+        meta={"turn_id": "turn-rotate-expiry"},
+    )
+
+    monotonic_values = iter([100.0, 100.0, 131.0, 131.0])
+    with patch.object(server.time, "monotonic", side_effect=lambda: next(monotonic_values)):
+        first = server.rotate_angle(ctx, angle_deg=5.0)
+        second = server.rotate_angle(ctx, angle_deg=5.0)
+
+    assert first["success"] is True
+    assert "deduplicated" not in second
+    assert motion.rotate_angle_calls == 2
+
+
+def test_rotate_angle_failure_is_not_cached() -> None:
+    motion = FakeMotion()
+    motion.rotate_angle_payload = RuntimeError("rotation offline")
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            motion=motion,
+            observability=FakeObservability(),
+            tour_stops=(),
+        ),
+        meta={"turn_id": "turn-rotate-failure"},
+    )
+
+    first = server.rotate_angle(ctx, angle_deg=5.0)
+    second = server.rotate_angle(ctx, angle_deg=5.0)
+
+    assert first["success"] is False
+    assert second["success"] is False
+    assert "deduplicated" not in second
+    assert motion.rotate_angle_calls == 2
 
 
 def test_lifespan_degrades_cleanly_when_ros_startup_fails() -> None:

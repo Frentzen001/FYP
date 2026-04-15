@@ -280,6 +280,7 @@ USE_LOCAL_MODELS=1
 LOCAL_STT_BASE_URL=http://127.0.0.1:8000/v1
 LOCAL_TTS_BASE_URL=http://127.0.0.1:8000/v1
 MORETEA_OPENCLAW_URL=http://<remote-desktop-ip>:<port>/v1
+MORETEA_OPENCLAW_READ_TIMEOUT_SEC=180
 ```
 
 Start the worker:
@@ -288,6 +289,15 @@ Start the worker:
 cd /home/frentzen/FYP/agent-starter-python
 ./scripts/run_openclaw_barebone.sh
 ```
+
+If the robot action completes but the visitor hears no reply and the worker logs `httpx.ReadTimeout`, `MORETEA_OPENCLAW_READ_TIMEOUT_SEC` only widens the outer LiveKit bridge request to OpenClaw. It is worth keeping, but it does not prevent OpenClaw itself from timing out earlier while streaming from OpenAI.
+
+For this failure mode, diagnose OpenClaw next:
+
+- capture the OpenClaw logs for the failed turn
+- confirm whether the failure happened during tool selection or during assistant generation after the tool completed
+- if the trace shows `stage=assistant` and `reason=timeout`, treat it as an OpenClaw-side upstream timeout until proven otherwise
+- use `moretea-observability-ui/openclaw_trace_cli.py` plus `moretea-openclaw-docker/HANDOFF.md` and `moretea-openclaw-docker/openclaw.json` as the source of truth for that investigation
 
 Thinking cue:
 

@@ -75,6 +75,9 @@ class AppContext:
 
 _ctx_singleton: AppContext | None = None
 _ctx_singleton_lock = threading.Lock()
+DEDUP_TTL_S = 30.0
+_motion_dedup_cache: dict[str, tuple[dict[str, object], float]] = {}
+_motion_dedup_lock = threading.Lock()
 
 
 def _utc_now() -> str:
@@ -163,6 +166,55 @@ def _request_correlation(ctx: Context[ServerSession, AppContext]) -> dict[str, s
         "parent_session_id": parent_session_id,
         "turn_id": turn_id,
     }
+
+
+def _normalize_motion_arg(value: object) -> str:
+    if isinstance(value, bool):
+        return "true" if value else "false"
+    if isinstance(value, int):
+        return str(value)
+    if isinstance(value, float):
+        return format(value, ".6f")
+    return str(value)
+
+
+def _motion_dedup_key(turn_id: str | None, tool_name: str, **kwargs: object) -> str | None:
+    if not turn_id:
+        return None
+    parts = [turn_id, tool_name]
+    for key in sorted(kwargs):
+        parts.append(f"{key}={_normalize_motion_arg(kwargs[key])}")
+    return ":".join(parts)
+
+
+def _prune_motion_dedup_cache(now: float) -> None:
+    expired = [
+        key for key, (_, stored_at) in _motion_dedup_cache.items() if now - stored_at >= DEDUP_TTL_S
+    ]
+    for key in expired:
+        _motion_dedup_cache.pop(key, None)
+
+
+def _check_motion_dedup(dedup_key: str | None) -> dict[str, object] | None:
+    if dedup_key is None:
+        return None
+    now = time.monotonic()
+    with _motion_dedup_lock:
+        _prune_motion_dedup_cache(now)
+        cached = _motion_dedup_cache.get(dedup_key)
+        if cached is None:
+            return None
+        result, _stored_at = cached
+        return dict(result)
+
+
+def _store_motion_dedup(dedup_key: str | None, result: dict[str, object]) -> None:
+    if dedup_key is None or result.get("success") is not True:
+        return
+    now = time.monotonic()
+    with _motion_dedup_lock:
+        _prune_motion_dedup_cache(now)
+        _motion_dedup_cache[dedup_key] = (dict(result), now)
 
 
 def _build_robot_snapshot(lifespan: AppContext) -> dict[str, object]:
@@ -869,6 +921,13 @@ def move_distance(
     correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("move_distance") if lifespan.observability else "move_distance"
     started_at = time.perf_counter()
+    dedup_key = _motion_dedup_key(
+        correlation["turn_id"],
+        "move_distance",
+        distance_m=distance_m,
+        speed_m_s=speed_m_s,
+        allow_open_loop=allow_open_loop,
+    )
     _emit_tool_started(
         lifespan,
         tool_name="move_distance",
@@ -879,6 +938,20 @@ def move_distance(
         summary="Distance move requested.",
         args_summary=_summarize_args(distance_m=distance_m, speed_m_s=speed_m_s, allow_open_loop=allow_open_loop),
     )
+    cached = _check_motion_dedup(dedup_key)
+    if cached is not None:
+        result = {**cached, "deduplicated": True}
+        _emit_tool_finished(
+            lifespan,
+            tool_name="move_distance",
+            execution_id=execution_id,
+            result=result,
+            turn_id=correlation["turn_id"],
+            session_id=correlation["session_id"],
+            parent_session_id=correlation["parent_session_id"],
+            started_at=started_at,
+        )
+        return result
     try:
         app = lifespan
         pos_fn = None
@@ -896,6 +969,7 @@ def move_distance(
         )
     except RuntimeError as exc:
         result = _normalize_motion_result(_error_payload(str(exc)), action="translation")
+    _store_motion_dedup(dedup_key, result)
     _emit_tool_finished(
         lifespan,
         tool_name="move_distance",
@@ -938,6 +1012,13 @@ def rotate_angle(
     correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("rotate_angle") if lifespan.observability else "rotate_angle"
     started_at = time.perf_counter()
+    dedup_key = _motion_dedup_key(
+        correlation["turn_id"],
+        "rotate_angle",
+        angle_deg=angle_deg,
+        speed_rad_s=speed_rad_s,
+        allow_open_loop=allow_open_loop,
+    )
     _emit_tool_started(
         lifespan,
         tool_name="rotate_angle",
@@ -948,6 +1029,20 @@ def rotate_angle(
         summary="Rotation move requested.",
         args_summary=_summarize_args(angle_deg=angle_deg, speed_rad_s=speed_rad_s, allow_open_loop=allow_open_loop),
     )
+    cached = _check_motion_dedup(dedup_key)
+    if cached is not None:
+        result = {**cached, "deduplicated": True}
+        _emit_tool_finished(
+            lifespan,
+            tool_name="rotate_angle",
+            execution_id=execution_id,
+            result=result,
+            turn_id=correlation["turn_id"],
+            session_id=correlation["session_id"],
+            parent_session_id=correlation["parent_session_id"],
+            started_at=started_at,
+        )
+        return result
     try:
         app = lifespan
         yaw_fn = None
@@ -965,6 +1060,7 @@ def rotate_angle(
         )
     except RuntimeError as exc:
         result = _normalize_motion_result(_error_payload(str(exc)), action="rotation")
+    _store_motion_dedup(dedup_key, result)
     _emit_tool_finished(
         lifespan,
         tool_name="rotate_angle",
@@ -985,6 +1081,7 @@ def stop_motion(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("stop_motion") if lifespan.observability else "stop_motion"
     started_at = time.perf_counter()
+    dedup_key = _motion_dedup_key(correlation["turn_id"], "stop_motion")
     _emit_tool_started(
         lifespan,
         tool_name="stop_motion",
@@ -995,10 +1092,25 @@ def stop_motion(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
         summary="Emergency stop requested.",
         args_summary=_summarize_args(),
     )
+    cached = _check_motion_dedup(dedup_key)
+    if cached is not None:
+        result = {**cached, "deduplicated": True}
+        _emit_tool_finished(
+            lifespan,
+            tool_name="stop_motion",
+            execution_id=execution_id,
+            result=result,
+            turn_id=correlation["turn_id"],
+            session_id=correlation["session_id"],
+            parent_session_id=correlation["parent_session_id"],
+            started_at=started_at,
+        )
+        return result
     try:
         result = lifespan.motion.stop()
     except RuntimeError as exc:
         result = _error_payload(str(exc))
+    _store_motion_dedup(dedup_key, result)
     _emit_tool_finished(
         lifespan,
         tool_name="stop_motion",
