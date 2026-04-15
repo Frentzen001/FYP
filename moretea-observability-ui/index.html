@@ -1,0 +1,128 @@
+<!DOCTYPE html>
+<html lang="en">
+  <head>
+    <meta charset="UTF-8" />
+    <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+    <title>MoreTea Observability UI</title>
+    <link rel="preconnect" href="https://fonts.googleapis.com" />
+    <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin />
+    <link
+      href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@400;500;700&family=IBM+Plex+Mono:wght@400;500&display=swap"
+      rel="stylesheet"
+    />
+    <link rel="stylesheet" href="./styles.css" />
+  </head>
+  <body>
+    <div class="app-shell">
+      <header class="hero">
+        <div>
+          <p class="eyebrow">MoreTea Runtime Observability</p>
+          <h1>Three-machine visibility for every turn, tool, and tunnel.</h1>
+          <p class="hero-copy">
+            Follow each interaction across the User Laptop, OpenClaw PC, and Robot PC,
+            and isolate whether the fault lives in a node, a service, or a link.
+          </p>
+        </div>
+        <div class="hero-controls">
+          <label class="control">
+            <span>Timeline scope</span>
+            <select id="turn-select" aria-label="Select turn"></select>
+          </label>
+          <div class="control">
+            <span>Connection</span>
+            <div id="connection-status" class="mini-meta"></div>
+          </div>
+        </div>
+      </header>
+
+      <main class="dashboard">
+        <section class="panel topology-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Topology / Connectivity</p>
+              <h2>Live system map</h2>
+            </div>
+            <button id="clear-filter" class="ghost-button" type="button">Show all nodes</button>
+          </div>
+          <div id="topology" class="topology" aria-live="polite"></div>
+          <div id="connectivity" class="connectivity-grid"></div>
+        </section>
+
+        <section class="panel timeline-panel">
+          <div class="panel-header">
+            <div>
+              <p class="panel-kicker">Interaction Timeline</p>
+              <h2>Turn events</h2>
+            </div>
+            <p id="timeline-filter-label" class="timeline-filter-label">Showing all machines</p>
+          </div>
+          <div id="timeline" class="timeline" aria-live="polite"></div>
+        </section>
+
+        <section class="details-grid">
+          <section class="panel detail-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Conversation</p>
+                <h2>Transcript and reply</h2>
+              </div>
+            </div>
+            <div id="conversation-panel" class="stack"></div>
+          </section>
+
+          <section class="panel detail-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Agent State</p>
+                <h2>Attention and sessions</h2>
+              </div>
+            </div>
+            <div id="agent-panel" class="stack"></div>
+          </section>
+
+          <section class="panel detail-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Tooling</p>
+                <h2>MCP tools and robot actions</h2>
+              </div>
+            </div>
+            <div id="tools-panel" class="stack"></div>
+          </section>
+
+          <section class="panel detail-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Robot</p>
+                <h2>Readiness and telemetry</h2>
+              </div>
+            </div>
+            <div id="robot-panel" class="stack"></div>
+          </section>
+
+          <section class="panel detail-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Personalization</p>
+                <h2>Faces and memory activity</h2>
+              </div>
+            </div>
+            <div id="personalization-panel" class="stack"></div>
+          </section>
+
+          <section class="panel detail-panel raw-panel">
+            <div class="panel-header">
+              <div>
+                <p class="panel-kicker">Structured Detail</p>
+                <h2>Selected payload</h2>
+              </div>
+            </div>
+            <pre id="raw-detail" class="raw-detail">Select a timeline event or tool to inspect its structured payload.</pre>
+          </section>
+        </section>
+      </main>
+    </div>
+
+    <script type="module" src="./app.js"></script>
+  </body>
+</html>
