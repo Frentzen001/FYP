@@ -387,6 +387,17 @@ class FakeSensors:
         return 0.0
 
 
+class FakeObservability:
+    def __init__(self) -> None:
+        self.events: list[dict[str, object]] = []
+
+    def emit_event(self, event: dict[str, object]) -> None:
+        self.events.append(event)
+
+    def next_tool_execution_id(self, tool_name: str) -> str:
+        return f"{tool_name}-test"
+
+
 def _app_context_factory(**kwargs: object):
     kwargs.setdefault("motion", FakeMotion())
     kwargs.setdefault("sensors", FakeSensors())
@@ -396,8 +407,15 @@ def _app_context_factory(**kwargs: object):
 server.AppContext = _app_context_factory  # type: ignore[assignment]
 
 
-def make_ctx(app_context: server.AppContext):
-    return SimpleNamespace(request_context=SimpleNamespace(lifespan_context=app_context))
+def make_ctx(app_context: server.AppContext, *, meta: dict[str, object] | None = None):
+    return SimpleNamespace(
+        request_context=SimpleNamespace(
+            lifespan_context=app_context,
+            meta=meta,
+            request=None,
+            session=SimpleNamespace(client_params=None),
+        )
+    )
 
 
 def test_health_reports_nested_provider_statuses() -> None:
@@ -764,6 +782,68 @@ def test_cancel_navigation_delegates_to_tour_navigation_provider() -> None:
 
     assert payload["success"] is True
     assert payload["action_id"] == "action-1"
+
+
+def test_rotate_angle_emits_session_correlation_when_meta_provided() -> None:
+    observability = FakeObservability()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            observability=observability,
+            tour_stops=(),
+        ),
+        meta={
+            "session_id": "child-rotate-1",
+            "parent_session_id": "main",
+            "turn_id": "turn-rotate-1",
+        },
+    )
+
+    payload = server.rotate_angle(ctx, angle_deg=5.0)
+
+    assert payload["success"] is True
+    assert len(observability.events) == 2
+    start_event = observability.events[0]
+    finish_event = observability.events[1]
+    assert start_event["raw"]["session_id"] == "child-rotate-1"
+    assert start_event["raw"]["parent_session_id"] == "main"
+    assert start_event["raw"]["turn_id"] == "turn-rotate-1"
+    assert finish_event["raw"]["session_id"] == "child-rotate-1"
+    assert finish_event["raw"]["parent_session_id"] == "main"
+
+
+def test_move_distance_emits_session_correlation_when_meta_provided() -> None:
+    observability = FakeObservability()
+    ctx = make_ctx(
+        server.AppContext(
+            publisher=FakePublisher(),
+            camera=FakeCamera(),
+            face_recognition=FakeFaceRecognition(),
+            face_registration=FakeFaceRegistration(),
+            navigation=FakeNavigation(),
+            tour_navigation=FakeTourNavigation(),
+            observability=observability,
+            tour_stops=(),
+        ),
+        meta={
+            "child_session_id": "child-move-1",
+            "parent_session_id": "main",
+            "turn_id": "turn-move-1",
+        },
+    )
+
+    payload = server.move_distance(ctx, distance_m=0.5)
+
+    assert payload["success"] is True
+    assert len(observability.events) == 2
+    assert observability.events[0]["raw"]["session_id"] == "child-move-1"
+    assert observability.events[0]["raw"]["parent_session_id"] == "main"
+    assert observability.events[1]["raw"]["turn_id"] == "turn-move-1"
 
 
 def test_lifespan_degrades_cleanly_when_ros_startup_fails() -> None:

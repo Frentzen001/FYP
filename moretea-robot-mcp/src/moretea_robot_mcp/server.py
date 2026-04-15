@@ -120,6 +120,51 @@ def _summarize_result(tool_name: str, result: object) -> str:
     return _truncate_text(f"{tool_name} completed.")
 
 
+def _request_value(source: object, key: str) -> object:
+    if source is None:
+        return None
+    if isinstance(source, dict):
+        return source.get(key)
+    return getattr(source, key, None)
+
+
+def _request_correlation(ctx: Context[ServerSession, AppContext]) -> dict[str, str | None]:
+    request_context = getattr(ctx, "request_context", None)
+    meta = getattr(request_context, "meta", None)
+    request = getattr(request_context, "request", None)
+
+    def _first_non_empty(*values: object) -> str | None:
+        for value in values:
+            if isinstance(value, str) and value.strip():
+                return value.strip()
+        return None
+
+    request_headers = getattr(request, "headers", None)
+    session_id = _first_non_empty(
+        _request_value(meta, "session_id"),
+        _request_value(meta, "child_session_id"),
+        _request_value(meta, "sessionId"),
+        _request_value(meta, "childSessionId"),
+        _request_value(request_headers, "x-openclaw-session-id"),
+        _request_value(request_headers, "x-openclaw-child-session-id"),
+    )
+    parent_session_id = _first_non_empty(
+        _request_value(meta, "parent_session_id"),
+        _request_value(meta, "parentSessionId"),
+        _request_value(request_headers, "x-openclaw-parent-session-id"),
+    )
+    turn_id = _first_non_empty(
+        _request_value(meta, "turn_id"),
+        _request_value(meta, "turnId"),
+        _request_value(request_headers, "x-openclaw-turn-id"),
+    )
+    return {
+        "session_id": session_id,
+        "parent_session_id": parent_session_id,
+        "turn_id": turn_id,
+    }
+
+
 def _build_robot_snapshot(lifespan: AppContext) -> dict[str, object]:
     publisher = lifespan.publisher.health()
     face_recognition = lifespan.face_recognition.get_recognized_faces()
@@ -214,6 +259,7 @@ def _emit_tool_started(
     execution_id: str,
     turn_id: str | None = None,
     session_id: str | None = None,
+    parent_session_id: str | None = None,
     summary: str,
     args_summary: str | None = None,
 ) -> None:
@@ -234,7 +280,7 @@ def _emit_tool_started(
                 "tool_name": tool_name,
                 "tool_kind": "mcp",
                 "session_id": session_id,
-                "parent_session_id": None,
+                "parent_session_id": parent_session_id,
                 "child_session_id": session_id,
                 "turn_id": turn_id,
                 "args_summary": args_summary,
@@ -251,6 +297,7 @@ def _emit_tool_finished(
     result: object,
     turn_id: str | None = None,
     session_id: str | None = None,
+    parent_session_id: str | None = None,
     started_at: float | None = None,
 ) -> None:
     if lifespan.observability is None:
@@ -280,7 +327,7 @@ def _emit_tool_finished(
                 "tool_name": tool_name,
                 "tool_kind": "mcp",
                 "session_id": session_id,
-                "parent_session_id": None,
+                "parent_session_id": parent_session_id,
                 "child_session_id": session_id,
                 "turn_id": turn_id,
                 "result_summary": result_summary,
@@ -724,12 +771,16 @@ def navigate_to_stop(
     """Navigate to a named tour stop and block until a terminal outcome is available."""
     lifespan = ctx.request_context.lifespan_context
     tour_navigation = lifespan.tour_navigation
+    correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("navigate_to_stop") if lifespan.observability else "navigate_to_stop"
     started_at = time.perf_counter()
     _emit_tool_started(
         lifespan,
         tool_name="navigate_to_stop",
         execution_id=execution_id,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
         summary=f"Navigation requested for stop `{stop_id}`.",
         args_summary=_summarize_args(stop_id=stop_id),
     )
@@ -743,11 +794,29 @@ def navigate_to_stop(
             status="failed",
             timed_out=False,
         )
-        _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, started_at=started_at)
+        _emit_tool_finished(
+            lifespan,
+            tool_name="navigate_to_stop",
+            execution_id=execution_id,
+            result=result,
+            turn_id=correlation["turn_id"],
+            session_id=correlation["session_id"],
+            parent_session_id=correlation["parent_session_id"],
+            started_at=started_at,
+        )
         return result
 
     result = _normalize_navigation_result(tour_navigation.navigate_to_stop(target))
-    _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, started_at=started_at)
+    _emit_tool_finished(
+        lifespan,
+        tool_name="navigate_to_stop",
+        execution_id=execution_id,
+        result=result,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
+        started_at=started_at,
+    )
     return result
 
 
@@ -758,17 +827,30 @@ def cancel_navigation(
 ) -> dict[str, object]:
     """Cancel any active Humble Nav2 navigation started through this server."""
     lifespan = ctx.request_context.lifespan_context
+    correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("cancel_navigation") if lifespan.observability else "cancel_navigation"
     started_at = time.perf_counter()
     _emit_tool_started(
         lifespan,
         tool_name="cancel_navigation",
         execution_id=execution_id,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
         summary="Navigation cancellation requested.",
         args_summary=_summarize_args(action_id=action_id),
     )
     result = lifespan.tour_navigation.cancel_navigation(action_id=action_id)
-    _emit_tool_finished(lifespan, tool_name="cancel_navigation", execution_id=execution_id, result=result, started_at=started_at)
+    _emit_tool_finished(
+        lifespan,
+        tool_name="cancel_navigation",
+        execution_id=execution_id,
+        result=result,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
+        started_at=started_at,
+    )
     return result
 
 
@@ -789,12 +871,16 @@ def move_distance(
              actual_distance_m (closed_loop only), timed_out.
     """
     lifespan = ctx.request_context.lifespan_context
+    correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("move_distance") if lifespan.observability else "move_distance"
     started_at = time.perf_counter()
     _emit_tool_started(
         lifespan,
         tool_name="move_distance",
         execution_id=execution_id,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
         summary="Distance move requested.",
         args_summary=_summarize_args(distance_m=distance_m, speed_m_s=speed_m_s, allow_open_loop=allow_open_loop),
     )
@@ -815,7 +901,16 @@ def move_distance(
         )
     except RuntimeError as exc:
         result = _normalize_motion_result(_error_payload(str(exc)), action="translation")
-    _emit_tool_finished(lifespan, tool_name="move_distance", execution_id=execution_id, result=result, started_at=started_at)
+    _emit_tool_finished(
+        lifespan,
+        tool_name="move_distance",
+        execution_id=execution_id,
+        result=result,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
+        started_at=started_at,
+    )
     return result
 
 
@@ -845,12 +940,16 @@ def rotate_angle(
              actual_angle_deg (closed_loop only), timed_out.
     """
     lifespan = ctx.request_context.lifespan_context
+    correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("rotate_angle") if lifespan.observability else "rotate_angle"
     started_at = time.perf_counter()
     _emit_tool_started(
         lifespan,
         tool_name="rotate_angle",
         execution_id=execution_id,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
         summary="Rotation move requested.",
         args_summary=_summarize_args(angle_deg=angle_deg, speed_rad_s=speed_rad_s, allow_open_loop=allow_open_loop),
     )
@@ -871,7 +970,16 @@ def rotate_angle(
         )
     except RuntimeError as exc:
         result = _normalize_motion_result(_error_payload(str(exc)), action="rotation")
-    _emit_tool_finished(lifespan, tool_name="rotate_angle", execution_id=execution_id, result=result, started_at=started_at)
+    _emit_tool_finished(
+        lifespan,
+        tool_name="rotate_angle",
+        execution_id=execution_id,
+        result=result,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
+        started_at=started_at,
+    )
     return result
 
 
@@ -879,12 +987,16 @@ def rotate_angle(
 def stop_motion(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Publish a zero-velocity Twist immediately to halt all movement."""
     lifespan = ctx.request_context.lifespan_context
+    correlation = _request_correlation(ctx)
     execution_id = lifespan.observability.next_tool_execution_id("stop_motion") if lifespan.observability else "stop_motion"
     started_at = time.perf_counter()
     _emit_tool_started(
         lifespan,
         tool_name="stop_motion",
         execution_id=execution_id,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
         summary="Emergency stop requested.",
         args_summary=_summarize_args(),
     )
@@ -892,7 +1004,16 @@ def stop_motion(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
         result = lifespan.motion.stop()
     except RuntimeError as exc:
         result = _error_payload(str(exc))
-    _emit_tool_finished(lifespan, tool_name="stop_motion", execution_id=execution_id, result=result, started_at=started_at)
+    _emit_tool_finished(
+        lifespan,
+        tool_name="stop_motion",
+        execution_id=execution_id,
+        result=result,
+        turn_id=correlation["turn_id"],
+        session_id=correlation["session_id"],
+        parent_session_id=correlation["parent_session_id"],
+        started_at=started_at,
+    )
     return result
 
 

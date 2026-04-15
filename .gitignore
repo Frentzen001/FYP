@@ -4,6 +4,7 @@
 .DS_Store
 *.swp
 *.swo
+*.pyc
 
 # Workspace env files
 .env

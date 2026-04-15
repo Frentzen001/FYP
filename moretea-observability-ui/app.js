@@ -534,7 +534,12 @@ function eventTitle(eventItem) {
     session_activity: "Session activity",
     sessions_spawn: "Child session spawned",
     sessions_send: "Child session update",
+    child_session_spawned: "Child session spawned",
+    child_session_started: "Child session started",
+    child_session_completed: "Child session completed",
+    child_session_errored: "Child session error",
     child_session_missing_result: "Child session missing result",
+    child_session_report_without_tool_result: "Child session reported without tool result",
     memory_activity: "Memory activity",
   };
   return mapping[eventItem.type] || (eventItem.type || "event").replaceAll("_", " ");
