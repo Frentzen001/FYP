@@ -38,13 +38,13 @@ stops:
     ow: 0.86357
     narration: "The Top 10 Office is tied to committee coordination, planning, and day-to-day support activity. It helps connect the operations side of Garage@EEE with the student projects happening across the space."
     faq_tags: ["committee", "support"]
-  - id: electronics_workstation
-    name: Electronics Workstation
-    aliases: ["electronics", "workstation","soldering", "oscilloscope"]
+  - id: electronics_workbench
+    name: Electronics Workbench
+    aliases: ["electronics", "workbench","soldering", "oscilloscope"]
     x: 12.954
     y: 1.1974
     ow: 0.93824
-    narration: "The Electronics Workstation is a dedicated space for electronics prototyping, soldering, and testing. Students often come here when a project needs precise assembly and testing."
+    narration: "The Electronics Workbench is a dedicated space for electronics prototyping, soldering, and testing. Students often come here when a project needs precise assembly and testing."
     faq_tags: ["electronics", "soldering", "testing"]
   - id: workshop_area
     name: Workshop Area

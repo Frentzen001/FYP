@@ -1,11 +1,14 @@
 from __future__ import annotations
 
+import os
 import threading
+import time
 from typing import Any
 
 ODOM_TOPIC = "/odom"
 BATTERY_TOPIC = "/battery_state"
 SCAN_TOPIC = "/scan"
+ODOM_STALE_AFTER_S = float(os.getenv("MORETEA_ODOM_STALE_AFTER_S", "1.0"))
 
 try:
     import rclpy
@@ -49,6 +52,7 @@ class RobotSensorProvider:
         self._startup_error: str | None = None
         self._lock = threading.Lock()
         self._latest_odom: Any = None
+        self._latest_odom_monotonic: float | None = None
         self._latest_battery: Any = None
         self._latest_scan: Any = None
 
@@ -99,6 +103,7 @@ class RobotSensorProvider:
         finally:
             with self._lock:
                 self._latest_odom = None
+                self._latest_odom_monotonic = None
                 self._latest_battery = None
                 self._latest_scan = None
             self._started = False
@@ -108,11 +113,17 @@ class RobotSensorProvider:
 
     def health(self) -> dict[str, object]:
         with self._lock:
+            odom_age_s = None
+            if self._latest_odom_monotonic is not None:
+                odom_age_s = round(max(0.0, time.monotonic() - self._latest_odom_monotonic), 3)
             return {
                 "success": True,
                 "ros_ready": bool(ROS2_AVAILABLE and self._started),
                 "sensor_msgs_available": SENSOR_MSGS_AVAILABLE,
                 "odom_received": self._latest_odom is not None,
+                "odom_age_s": odom_age_s,
+                "odom_fresh": odom_age_s is not None and odom_age_s <= ODOM_STALE_AFTER_S,
+                "odom_stale_after_s": ODOM_STALE_AFTER_S,
                 "battery_received": self._latest_battery is not None,
                 "scan_received": self._latest_scan is not None,
                 "topics": {
@@ -174,6 +185,17 @@ class RobotSensorProvider:
         cosy_cosp = 1.0 - 2.0 * (q.y * q.y + q.z * q.z)
         return math.atan2(siny_cosp, cosy_cosp)
 
+    def odometry_age_s(self) -> float | None:
+        with self._lock:
+            stamp = self._latest_odom_monotonic
+        if stamp is None:
+            return None
+        return max(0.0, time.monotonic() - stamp)
+
+    def has_fresh_odometry(self) -> bool:
+        age_s = self.odometry_age_s()
+        return age_s is not None and age_s <= ODOM_STALE_AFTER_S
+
     def get_battery(self) -> dict[str, object]:
         if not self._started:
             raise RuntimeError("RobotSensorProvider is not running.")
@@ -216,6 +238,7 @@ class RobotSensorProvider:
     def _on_odom(self, msg: Any) -> None:
         with self._lock:
             self._latest_odom = msg
+            self._latest_odom_monotonic = time.monotonic()
 
     def _on_battery(self, msg: Any) -> None:
         with self._lock:

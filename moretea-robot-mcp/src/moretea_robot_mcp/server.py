@@ -7,15 +7,18 @@ import time
 from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from dataclasses import dataclass
+from datetime import datetime, timezone
 
 import uvicorn
 from starlette.responses import Response
 from starlette.types import ASGIApp, Receive, Scope, Send
+from uuid import uuid4
 
 from .camera_capture import CAMERA_TOPIC, CAMERA_TOPIC_KIND, CameraCaptureProvider
 from .face_registration import FACE_DB_PATH, FACE_REGISTRATION_SERVICE, FaceRegistrationProvider
 from .face_recognition_status import FACE_RECOGNITION_TOPIC, FaceRecognitionStatusProvider
 from .navigation_status import NavigationStatusProvider
+from .observability import RobotObservabilityReporter
 from .robot_motion import CMD_VEL_TOPIC, RobotMotionProvider
 from .robot_sensors import BATTERY_TOPIC, ODOM_TOPIC, SCAN_TOPIC, RobotSensorProvider
 from .ros_eye_publisher import EyeExpressionPublisher
@@ -58,6 +61,7 @@ class AppContext:
     motion: RobotMotionProvider
     sensors: RobotSensorProvider
     tour_stops: tuple[TourStop, ...]
+    observability: RobotObservabilityReporter | None = None
     publisher_start_error: str | None = None
     camera_start_error: str | None = None
     face_recognition_start_error: str | None = None
@@ -71,6 +75,220 @@ class AppContext:
 
 _ctx_singleton: AppContext | None = None
 _ctx_singleton_lock = threading.Lock()
+
+
+def _utc_now() -> str:
+    return datetime.now(timezone.utc).isoformat()
+
+
+def _truncate_text(value: object, *, limit: int = 180) -> str:
+    text = str(value).strip()
+    if len(text) <= limit:
+        return text
+    return f"{text[:limit - 1]}..."
+
+
+def _summarize_args(**kwargs: object) -> str:
+    parts: list[str] = []
+    for key, value in kwargs.items():
+        if value is None:
+            continue
+        parts.append(f"{key}={value}")
+    return _truncate_text(", ".join(parts) or "no arguments")
+
+
+def _summarize_result(tool_name: str, result: object) -> str:
+    if isinstance(result, dict):
+        if result.get("success") is False:
+            return _truncate_text(result.get("error") or f"{tool_name} failed.")
+        if tool_name == "health":
+            if result.get("motion_confirmable"):
+                return "Robot is ready and motion is confirmable."
+            return "Robot health returned, but motion is not confirmable."
+        if tool_name == "navigate_to_stop":
+            status = result.get("status")
+            event = result.get("event")
+            if event:
+                return _truncate_text(f"Navigation reported {event}.")
+            if status:
+                return _truncate_text(f"Navigation status is {status}.")
+        if "detail" in result and result.get("detail"):
+            return _truncate_text(result["detail"])
+        if "message" in result and result.get("message"):
+            return _truncate_text(result["message"])
+        return _truncate_text(f"{tool_name} succeeded.")
+    return _truncate_text(f"{tool_name} completed.")
+
+
+def _build_robot_snapshot(lifespan: AppContext) -> dict[str, object]:
+    publisher = lifespan.publisher.health()
+    face_recognition = lifespan.face_recognition.get_recognized_faces()
+    tour_navigation = lifespan.tour_navigation.current_status()
+    health_payload = {
+        "robot_control_ready": bool(publisher.get("ros_ready")),
+        "camera_ready": bool(lifespan.camera.health().get("camera_ready")),
+        "face_recognition_ready": bool(lifespan.face_recognition.health().get("face_recognition_ready")),
+        "face_registration_ready": bool(lifespan.face_registration.health().get("face_registration_ready")),
+        "navigation_ready": bool(lifespan.tour_navigation.health().get("nav2_ready")),
+        "motion_ready": bool(lifespan.motion.health().get("ros_ready")),
+        "sensors_ready": bool(lifespan.sensors.health().get("ros_ready")),
+        "motion_confirmable": bool(
+            lifespan.motion.health().get("ros_ready")
+            and lifespan.sensors.health().get("odom_received")
+            and lifespan.sensors.health().get("odom_fresh")
+        ),
+    }
+    battery_payload = lifespan.sensors.get_battery() if lifespan.sensors.health().get("battery_received") else {}
+    scan_payload = lifespan.sensors.get_laser_scan() if lifespan.sensors.health().get("scan_received") else {}
+    services = [
+        {
+            "id": "ros2",
+            "machine_id": "robot-pc",
+            "name": "ROS 2",
+            "status": "healthy" if publisher.get("ros_ready") else "warning",
+            "last_heartbeat": _utc_now(),
+            "detail": publisher.get("startup_error") or "ROS publisher lifecycle available.",
+        },
+        {
+            "id": "navigation",
+            "machine_id": "robot-pc",
+            "name": "Navigation",
+            "status": "healthy" if health_payload["navigation_ready"] else "warning",
+            "last_heartbeat": _utc_now(),
+            "detail": lifespan.tour_navigation.health().get("readiness_detail") or "Navigation status available.",
+        },
+        {
+            "id": "sensors",
+            "machine_id": "robot-pc",
+            "name": "Sensors",
+            "status": "healthy" if health_payload["sensors_ready"] else "warning",
+            "last_heartbeat": _utc_now(),
+            "detail": "Robot sensors heartbeat updated.",
+        },
+        {
+            "id": "robot-control",
+            "machine_id": "robot-pc",
+            "name": "Robot control",
+            "status": "healthy" if health_payload["robot_control_ready"] else "warning",
+            "last_heartbeat": _utc_now(),
+            "detail": "Robot control providers are running.",
+        },
+    ]
+    machine_health = "healthy"
+    if any(item["status"] != "healthy" for item in services):
+        machine_health = "warning"
+    return {
+        "machine_health": machine_health,
+        "summary": "Robot readiness and telemetry snapshot updated.",
+        "services": services,
+        "turn_id": tour_navigation.get("turn_id"),
+        "robot_readiness": {
+            "navigation_ready": health_payload["navigation_ready"],
+            "motion_confirmable": health_payload["motion_confirmable"],
+            "odom_fresh": lifespan.sensors.health().get("odom_fresh"),
+            "battery_percent": battery_payload.get("percentage"),
+            "nearest_obstacle_m": scan_payload.get("nearest_obstacle_m"),
+        },
+        "robot_action_state": {
+            "kind": "navigation" if tour_navigation.get("active_goal") else "idle",
+            "target_stop": tour_navigation.get("active_stop_id"),
+            "action_status": tour_navigation.get("status"),
+            "distance_remaining_m": tour_navigation.get("distance_remaining_m"),
+            "recovery_count": tour_navigation.get("recovery_count", 0),
+            "replan_count": tour_navigation.get("replan_count", 0),
+            "last_event_note": tour_navigation.get("last_event_note"),
+            "action_id": tour_navigation.get("action_id"),
+        },
+        "personalization": {
+            "recognized_faces": face_recognition.get("faces", []),
+            "register_face_offered": False,
+            "memory_activity": [],
+        },
+    }
+
+
+def _emit_tool_started(
+    lifespan: AppContext,
+    *,
+    tool_name: str,
+    execution_id: str,
+    turn_id: str | None = None,
+    session_id: str | None = None,
+    summary: str,
+    args_summary: str | None = None,
+) -> None:
+    if lifespan.observability is None:
+        return
+    lifespan.observability.emit_event(
+        {
+            "id": f"{execution_id}-start",
+            "turn_id": turn_id,
+            "machine_id": "robot-pc",
+            "service_id": "robot-control",
+            "type": "tool_call",
+            "status": "healthy",
+            "timestamp": _utc_now(),
+            "payload_summary": summary,
+            "raw": {
+                "tool_execution_id": execution_id,
+                "tool_name": tool_name,
+                "tool_kind": "mcp",
+                "session_id": session_id,
+                "parent_session_id": None,
+                "child_session_id": session_id,
+                "turn_id": turn_id,
+                "args_summary": args_summary,
+            },
+        }
+    )
+
+
+def _emit_tool_finished(
+    lifespan: AppContext,
+    *,
+    tool_name: str,
+    execution_id: str,
+    result: object,
+    turn_id: str | None = None,
+    session_id: str | None = None,
+    started_at: float | None = None,
+) -> None:
+    if lifespan.observability is None:
+        return
+    status = "healthy"
+    error = None
+    if isinstance(result, dict) and result.get("success") is False:
+        status = "error"
+        error = result.get("error")
+    latency_ms = None
+    if started_at is not None:
+        latency_ms = int((time.perf_counter() - started_at) * 1000)
+    result_summary = _summarize_result(tool_name, result)
+    lifespan.observability.emit_event(
+        {
+            "id": f"{execution_id}-finish",
+            "turn_id": turn_id,
+            "machine_id": "robot-pc",
+            "service_id": "robot-control",
+            "type": "tool_error" if status == "error" else "tool_result",
+            "status": status,
+            "timestamp": _utc_now(),
+            "latency_ms": latency_ms,
+            "payload_summary": result_summary,
+            "raw": {
+                "tool_execution_id": execution_id,
+                "tool_name": tool_name,
+                "tool_kind": "mcp",
+                "session_id": session_id,
+                "parent_session_id": None,
+                "child_session_id": session_id,
+                "turn_id": turn_id,
+                "result_summary": result_summary,
+                "error": error,
+                "result": result,
+            },
+        }
+    )
 
 
 def _build_app_context() -> AppContext:
@@ -94,6 +312,7 @@ def _build_app_context() -> AppContext:
         battery_topic=os.getenv("MORETEA_BATTERY_TOPIC", BATTERY_TOPIC),
         scan_topic=os.getenv("MORETEA_SCAN_TOPIC", SCAN_TOPIC),
     )
+    observability = RobotObservabilityReporter()
     publisher_start_error: str | None = None
     camera_start_error: str | None = None
     face_recognition_start_error: str | None = None
@@ -160,6 +379,7 @@ def _build_app_context() -> AppContext:
         motion=motion,
         sensors=sensors,
         tour_stops=tour_stops,
+        observability=observability,
         publisher_start_error=publisher_start_error,
         camera_start_error=camera_start_error,
         face_recognition_start_error=face_recognition_start_error,
@@ -185,6 +405,8 @@ async def app_lifespan(_: FastMCP) -> AsyncIterator[AppContext]:
     with _ctx_singleton_lock:
         if _ctx_singleton is None:
             _ctx_singleton = _build_app_context()
+            if _ctx_singleton.observability is not None:
+                _ctx_singleton.observability.start(lambda: _build_robot_snapshot(_ctx_singleton))
     yield _ctx_singleton
 
 
@@ -206,6 +428,7 @@ mcp = FastMCP(
         "On timed_out=True: call navigate_to_stop again silently with the same action_id (no user message needed). "
         "On terminal status (completed/failed/cancelled): announce the outcome, done. "
         "MOTION (mandatory — subagent pattern only): "
+        "Call health before any motion request and refuse motion when motion_confirmable is false. "
         "Never call move_distance or rotate_angle from the main interactive turn — they block for up to 10 s. "
         "Always spawn a background subagent via sessions_spawn. "
         "The subagent calls move_distance(distance_m=...) for translation or rotate_angle(angle_deg=...) for rotation — "
@@ -228,27 +451,49 @@ def _error_payload(message: str, **fields: object) -> dict[str, object]:
 def health(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Report whether the robot-side MCP providers are ready."""
     lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("health") if lifespan.observability else "health"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="health",
+        execution_id=execution_id,
+        summary="Robot health probe started.",
+        args_summary=_summarize_args(),
+    )
     publisher = lifespan.publisher.health()
     camera = lifespan.camera.health()
     face_recognition = lifespan.face_recognition.health()
     face_registration = lifespan.face_registration.health()
     navigation = lifespan.navigation.health()
     tour_navigation = lifespan.tour_navigation.health()
-    return {
+    motion = lifespan.motion.health()
+    sensors = lifespan.sensors.health()
+    motion_node_ready = bool(motion.get("ros_ready"))
+    odom_received = bool(sensors.get("odom_received"))
+    odom_fresh = bool(sensors.get("odom_fresh"))
+    cmd_vel_publishable = motion_node_ready
+    motion_confirmable = motion_node_ready and odom_received and odom_fresh
+    result = {
         "success": True,
         "robot_control_ready": bool(publisher.get("ros_ready")),
         "camera_ready": bool(camera.get("camera_ready")),
         "face_recognition_ready": bool(face_recognition.get("face_recognition_ready")),
         "face_registration_ready": bool(face_registration.get("face_registration_ready")),
         "navigation_ready": bool(tour_navigation.get("nav2_ready")),
-        "motion_ready": bool(lifespan.motion.health().get("ros_ready")),
-        "sensors_ready": bool(lifespan.sensors.health().get("ros_ready")),
+        "motion_ready": motion_node_ready,
+        "sensors_ready": bool(sensors.get("ros_ready")),
+        "motion_node_ready": motion_node_ready,
+        "odom_received": odom_received,
+        "cmd_vel_publishable": cmd_vel_publishable,
+        "motion_confirmable": motion_confirmable,
         "publisher": publisher,
         "camera": camera,
         "face_recognition": face_recognition,
         "face_registration": face_registration,
         "navigation": navigation,
         "tour_navigation": tour_navigation,
+        "motion": motion,
+        "sensors": sensors,
         "tour_stop_count": len(lifespan.tour_stops),
         "startup_errors": {
             "publisher": lifespan.publisher_start_error,
@@ -262,57 +507,133 @@ def health(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
             "tour_stops": lifespan.tour_stops_error,
         },
     }
+    _emit_tool_finished(lifespan, tool_name="health", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def express_emotion(mood: str, ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Publish one named eye expression to the robot."""
     publisher = ctx.request_context.lifespan_context.publisher
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("express_emotion") if lifespan.observability else "express_emotion"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="express_emotion",
+        execution_id=execution_id,
+        summary="Eye expression tool started.",
+        args_summary=_summarize_args(mood=mood),
+    )
     try:
-        return publisher.publish_emotion(mood)
+        result = publisher.publish_emotion(mood)
     except (RuntimeError, ValueError) as exc:
-        return _error_payload(str(exc), mood=mood)
+        result = _error_payload(str(exc), mood=mood)
+    _emit_tool_finished(lifespan, tool_name="express_emotion", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def capture_image(ctx: Context[ServerSession, AppContext]):
     """Return the latest buffered camera frame as an image the model can see."""
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("capture_image") if lifespan.observability else "capture_image"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="capture_image",
+        execution_id=execution_id,
+        summary="Camera capture tool started.",
+        args_summary=_summarize_args(),
+    )
     try:
-        result = ctx.request_context.lifespan_context.camera.capture_image()
+        result = lifespan.camera.capture_image()
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+        _emit_tool_finished(lifespan, tool_name="capture_image", execution_id=execution_id, result=result, started_at=started_at)
+        return result
 
+    _emit_tool_finished(lifespan, tool_name="capture_image", execution_id=execution_id, result=result, started_at=started_at)
     return [ImageContent(type="image", data=result["image_base64"], mimeType="image/jpeg")]
 
 
 @mcp.tool()
 def get_recognized_faces(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Return the latest structured face-recognition snapshot from the robot."""
-    return ctx.request_context.lifespan_context.face_recognition.get_recognized_faces()
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("get_recognized_faces") if lifespan.observability else "get_recognized_faces"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="get_recognized_faces",
+        execution_id=execution_id,
+        summary="Face recognition snapshot requested.",
+        args_summary=_summarize_args(),
+    )
+    result = lifespan.face_recognition.get_recognized_faces()
+    if lifespan.observability is not None:
+        lifespan.observability.emit_event(
+            {
+                "id": f"face-check-{uuid4()}",
+                "turn_id": None,
+                "machine_id": "robot-pc",
+                "service_id": "robot-control",
+                "type": "face_check",
+                "status": "healthy",
+                "timestamp": _utc_now(),
+                "payload_summary": "Face recognition snapshot updated.",
+                "raw": {"recognized_faces": result.get("faces", [])},
+            }
+        )
+    _emit_tool_finished(lifespan, tool_name="get_recognized_faces", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def register_face(name: str, ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Register one newly met person's face through the robot-side ROS service."""
-    provider = ctx.request_context.lifespan_context.face_registration
+    lifespan = ctx.request_context.lifespan_context
+    provider = lifespan.face_registration
+    execution_id = lifespan.observability.next_tool_execution_id("register_face") if lifespan.observability else "register_face"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="register_face",
+        execution_id=execution_id,
+        summary="Face registration requested.",
+        args_summary=_summarize_args(name=name.strip()),
+    )
     try:
-        return provider.register_face(name)
+        result = provider.register_face(name)
     except ValueError as exc:
         normalized_name = name.strip()
-        return _error_payload(str(exc), name=normalized_name, duplicate="already registered" in str(exc).lower(), db_path=str(provider._db_path))
+        result = _error_payload(str(exc), name=normalized_name, duplicate="already registered" in str(exc).lower(), db_path=str(provider._db_path))
     except RuntimeError as exc:
-        return _error_payload(str(exc), name=name.strip(), duplicate=False, db_path=str(provider._db_path))
+        result = _error_payload(str(exc), name=name.strip(), duplicate=False, db_path=str(provider._db_path))
+    _emit_tool_finished(lifespan, tool_name="register_face", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def get_navigation_status(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Report current read-only navigation status from the robot."""
     lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("get_navigation_status") if lifespan.observability else "get_navigation_status"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="get_navigation_status",
+        execution_id=execution_id,
+        summary="Navigation status requested.",
+        args_summary=_summarize_args(),
+    )
     provider = lifespan.navigation
     try:
         status = provider.status()
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+        _emit_tool_finished(lifespan, tool_name="get_navigation_status", execution_id=execution_id, result=result, started_at=started_at)
+        return result
     live_status = lifespan.tour_navigation.current_status()
     if live_status.get("active_goal"):
         status["available"] = True
@@ -338,6 +659,7 @@ def get_navigation_status(ctx: Context[ServerSession, AppContext]) -> dict[str, 
         status["action_detail"] = live_status["detail"]
     if live_status.get("last_outcome") is not None:
         status["last_outcome"] = live_status["last_outcome"]
+    _emit_tool_finished(lifespan, tool_name="get_navigation_status", execution_id=execution_id, result=status, started_at=started_at)
     return status
 
 
@@ -345,11 +667,23 @@ def get_navigation_status(ctx: Context[ServerSession, AppContext]) -> dict[str, 
 def list_tour_stops(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """List configured tour stops and aliases by stable stop id."""
     lifespan = ctx.request_context.lifespan_context
-    return {
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("list_tour_stops") if lifespan.observability else "list_tour_stops"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="list_tour_stops",
+        execution_id=execution_id,
+        summary="Tour stop catalog requested.",
+        args_summary=_summarize_args(),
+    )
+    result = {
         "success": True,
         "count": len(lifespan.tour_stops),
         "stops": [serialize_stop(stop) for stop in lifespan.tour_stops],
     }
+    _emit_tool_finished(lifespan, tool_name="list_tour_stops", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 _TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
@@ -380,20 +714,38 @@ def navigate_to_stop(
     """
     lifespan = ctx.request_context.lifespan_context
     tour_navigation = lifespan.tour_navigation
+    execution_id = lifespan.observability.next_tool_execution_id("navigate_to_stop") if lifespan.observability else "navigate_to_stop"
+    started_at = time.perf_counter()
+    session_id = None
+    turn_id = None
+    _emit_tool_started(
+        lifespan,
+        tool_name="navigate_to_stop",
+        execution_id=execution_id,
+        summary=f"Navigation requested for stop `{stop_id}`.",
+        turn_id=turn_id,
+        session_id=session_id,
+        args_summary=_summarize_args(stop_id=stop_id, action_id=action_id, max_wait_s=max_wait_s),
+    )
 
     if action_id is None:
         # Start new navigation
         target = next((s for s in lifespan.tour_stops if s.id == stop_id.strip()), None)
         if target is None:
-            return _error_payload(
+            result = _error_payload(
                 f"Unknown stop_id '{stop_id}'.",
                 stop_id=stop_id,
                 available_stop_ids=[s.id for s in lifespan.tour_stops],
             )
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, started_at=started_at)
+            return result
         started = tour_navigation.start_navigation_to_stop(target)
         if not started.get("success"):
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=started, started_at=started_at)
             return started
         action_id = started["action_id"]
+        session_id = started.get("session_id")
+        turn_id = started.get("turn_id")
 
     capped = min(float(max_wait_s), _NAV_STEP_CAP_S)
     deadline = time.monotonic() + capped
@@ -401,7 +753,9 @@ def navigate_to_stop(
     # Establish baseline event counts before polling.
     baseline = tour_navigation.get_navigation_action_status(action_id)
     if not baseline.get("success"):
-        return {**baseline, "action_id": action_id}
+        result = {**baseline, "action_id": action_id}
+        _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+        return result
     baseline_replan: int = baseline.get("replan_count", 0) or 0
     baseline_recovery: int = baseline.get("recovery_count", 0) or 0
 
@@ -422,23 +776,33 @@ def navigate_to_stop(
     while True:
         snap = tour_navigation.get_navigation_action_status(action_id)
         if not snap.get("success"):
-            return {**snap, "action_id": action_id, "timed_out": False, "event": None}
+            result = {**snap, "action_id": action_id, "timed_out": False, "event": None}
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+            return result
 
         status = snap.get("status")
         # Terminal check first — completion beats any concurrent event.
         if status in _TERMINAL_STATUSES:
-            return _result(snap, timed_out=False, event=None)
+            result = _result(snap, timed_out=False, event=None)
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+            return result
 
         # Event checks — return early so the subagent can send a reassurance via sessions_send.
         cur_replan: int = snap.get("replan_count", 0) or 0
         cur_recovery: int = snap.get("recovery_count", 0) or 0
         if cur_replan > baseline_replan:
-            return _result(snap, timed_out=False, event="replan")
+            result = _result(snap, timed_out=False, event="replan")
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+            return result
         if cur_recovery > baseline_recovery:
-            return _result(snap, timed_out=False, event="recovery")
+            result = _result(snap, timed_out=False, event="recovery")
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+            return result
 
         if time.monotonic() >= deadline:
-            return _result(snap, timed_out=True, event=None)
+            result = _result(snap, timed_out=True, event=None)
+            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+            return result
 
         time.sleep(_NAV_POLL_S)
 
@@ -449,7 +813,19 @@ def cancel_navigation(
     action_id: str | None = None,
 ) -> dict[str, object]:
     """Cancel any active Humble Nav2 navigation started through this server."""
-    return ctx.request_context.lifespan_context.tour_navigation.cancel_navigation(action_id=action_id)
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("cancel_navigation") if lifespan.observability else "cancel_navigation"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="cancel_navigation",
+        execution_id=execution_id,
+        summary="Navigation cancellation requested.",
+        args_summary=_summarize_args(action_id=action_id),
+    )
+    result = lifespan.tour_navigation.cancel_navigation(action_id=action_id)
+    _emit_tool_finished(lifespan, tool_name="cancel_navigation", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
@@ -457,28 +833,43 @@ def move_distance(
     ctx: Context[ServerSession, AppContext],
     distance_m: float,
     speed_m_s: float = 0.15,
+    allow_open_loop: bool = False,
 ) -> dict[str, object]:
     """Move the robot forward or backward a fixed distance.
 
     distance_m: metres to travel. Positive = forward, negative = backward.
     speed_m_s: travel speed in m/s. Defaults to 0.15 m/s. Clamped to 0.4 m/s.
     Uses closed-loop odometry feedback when available (accurate to ~2 cm).
-    Falls back to open-loop timing if odometry not yet received.
-    Returns: success, mode (closed_loop|open_loop), requested_distance_m,
+    Refuses unconfirmed open-loop motion unless allow_open_loop=True.
+    Returns: success, mode (closed_loop|open_loop_override), requested_distance_m,
              actual_distance_m (closed_loop only), timed_out.
     """
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("move_distance") if lifespan.observability else "move_distance"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="move_distance",
+        execution_id=execution_id,
+        summary="Distance move requested.",
+        args_summary=_summarize_args(distance_m=distance_m, speed_m_s=speed_m_s, allow_open_loop=allow_open_loop),
+    )
     try:
-        app = ctx.request_context.lifespan_context
+        app = lifespan
         pos_fn = None
         if app.sensors is not None:
             pos_fn = app.sensors.get_position
-        return app.motion.move_distance(
+        result = app.motion.move_distance(
             distance_m=distance_m,
             speed_m_s=speed_m_s,
             pos_fn=pos_fn,
+            allow_open_loop=allow_open_loop,
+            feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
         )
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+    _emit_tool_finished(lifespan, tool_name="move_distance", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
@@ -486,6 +877,7 @@ def rotate_angle(
     ctx: Context[ServerSession, AppContext],
     angle_deg: float,
     speed_rad_s: float = 0.4,
+    allow_open_loop: bool = False,
 ) -> dict[str, object]:
     """Rotate the robot in place by an exact number of degrees.
 
@@ -498,61 +890,123 @@ def rotate_angle(
                Examples: 90 = quarter-turn left, -90 = quarter-turn right,
                180 = half-turn (face backwards), 360 = full spin.
     speed_rad_s: rotation speed in rad/s. Defaults to 0.4 rad/s. Clamped to 0.8 rad/s.
-                 For angles > 180°, use 0.8 rad/s to stay within the 10s timeout.
+                 For 360° full spins, prefer 0.8 rad/s for speed.
 
     Uses closed-loop odometry feedback when available (accurate to ~3°).
-    Falls back to open-loop timing if odometry not yet received.
-    Returns: success, mode (closed_loop|open_loop), requested_angle_deg,
+    Refuses unconfirmed open-loop rotation unless allow_open_loop=True.
+    Returns: success, mode (closed_loop|open_loop_override), requested_angle_deg,
              actual_angle_deg (closed_loop only), timed_out.
     """
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("rotate_angle") if lifespan.observability else "rotate_angle"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="rotate_angle",
+        execution_id=execution_id,
+        summary="Rotation move requested.",
+        args_summary=_summarize_args(angle_deg=angle_deg, speed_rad_s=speed_rad_s, allow_open_loop=allow_open_loop),
+    )
     try:
-        app = ctx.request_context.lifespan_context
+        app = lifespan
         yaw_fn = None
         if app.sensors is not None:
             yaw_fn = app.sensors.get_yaw
-        return app.motion.rotate_angle(
+        result = app.motion.rotate_angle(
             angle_deg=angle_deg,
             speed_rad_s=speed_rad_s,
             yaw_fn=yaw_fn,
+            allow_open_loop=allow_open_loop,
+            feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
         )
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+    _emit_tool_finished(lifespan, tool_name="rotate_angle", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def stop_motion(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Publish a zero-velocity Twist immediately to halt all movement."""
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("stop_motion") if lifespan.observability else "stop_motion"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="stop_motion",
+        execution_id=execution_id,
+        summary="Emergency stop requested.",
+        args_summary=_summarize_args(),
+    )
     try:
-        return ctx.request_context.lifespan_context.motion.stop()
+        result = lifespan.motion.stop()
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+    _emit_tool_finished(lifespan, tool_name="stop_motion", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def get_odometry(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Return the latest odometry reading: position (x, y) and velocity."""
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("get_odometry") if lifespan.observability else "get_odometry"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="get_odometry",
+        execution_id=execution_id,
+        summary="Odometry requested.",
+        args_summary=_summarize_args(),
+    )
     try:
-        return ctx.request_context.lifespan_context.sensors.get_odometry()
+        result = lifespan.sensors.get_odometry()
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+    _emit_tool_finished(lifespan, tool_name="get_odometry", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def get_battery(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Return the latest battery state: percentage and voltage."""
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("get_battery") if lifespan.observability else "get_battery"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="get_battery",
+        execution_id=execution_id,
+        summary="Battery snapshot requested.",
+        args_summary=_summarize_args(),
+    )
     try:
-        return ctx.request_context.lifespan_context.sensors.get_battery()
+        result = lifespan.sensors.get_battery()
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+    _emit_tool_finished(lifespan, tool_name="get_battery", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
 def get_laser_scan(ctx: Context[ServerSession, AppContext]) -> dict[str, object]:
     """Return a summary of the latest laser scan: nearest and farthest obstacle distances."""
+    lifespan = ctx.request_context.lifespan_context
+    execution_id = lifespan.observability.next_tool_execution_id("get_laser_scan") if lifespan.observability else "get_laser_scan"
+    started_at = time.perf_counter()
+    _emit_tool_started(
+        lifespan,
+        tool_name="get_laser_scan",
+        execution_id=execution_id,
+        summary="Laser scan snapshot requested.",
+        args_summary=_summarize_args(),
+    )
     try:
-        return ctx.request_context.lifespan_context.sensors.get_laser_scan()
+        result = lifespan.sensors.get_laser_scan()
     except RuntimeError as exc:
-        return _error_payload(str(exc))
+        result = _error_payload(str(exc))
+    _emit_tool_finished(lifespan, tool_name="get_laser_scan", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 def _env(name: str, legacy_name: str, default: str) -> str:

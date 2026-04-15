@@ -78,3 +78,15 @@ The preferred dev workflow is tmuxinator:
 - OpenClaw PC: `tmuxinator start moretea_voice`
 
 See [tmuxinator/README.md](/home/frentzen/FYP/tmuxinator/README.md) for install and usage.
+
+## Operator Dashboard
+
+The live three-machine observability dashboard now lives in:
+
+- [moretea-observability-ui/README.md](/home/morerobot/FYP/moretea-observability-ui/README.md)
+
+It is intended as the operator/developer view for:
+
+- User laptop voice runtime
+- OpenClaw PC node and tunnel health
+- Robot PC MCP tools, readiness, and telemetry
