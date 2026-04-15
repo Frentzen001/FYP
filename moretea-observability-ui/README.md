@@ -40,6 +40,8 @@ The normalized per-turn contract centers on:
 - `timeline_events`
 - `session_structure`
 
+For motion and navigation debugging, treat this aggregator as the primary source of truth. A failed child action should be diagnosable from one turn snapshot without guessing from free-form assistant text.
+
 The current implementation is wired for live data:
 
 - user laptop runtime emits turn and voice/OpenClaw events
@@ -137,11 +139,68 @@ cd /home/morerobot/FYP/moretea-observability-ui
 python3 openclaw_trace_cli.py -- openclaw agent --local --session-id main --verbose on --message "rotate 90 degrees" --json
 ```
 
+Containerized MoreTea example:
+
+```bash
+cd /home/morerobot/FYP/moretea-observability-ui
+python3 openclaw_trace_cli.py -- docker exec moretea-openclaw openclaw agent --local --session-id main --verbose on --message "rotate 5 degrees" --json
+```
+
 This preserves the original assistant-visible payloads and adds structured trace fields parsed from the verbose agent logs.
+
+If the wrapped command does not emit JSON, the wrapper now prints:
+
+- the command it executed
+- the exit code
+- short stdout/stderr summaries
+- a recommendation to run the raw command directly
+
+## Debugging Workflow
+
+To debug a failed child action such as `rotate 5 degrees`:
+
+1. Start the aggregator:
+
+```bash
+cd /home/morerobot/FYP/moretea-observability-ui
+uv sync
+uv run python backend.py
+```
+
+2. Enable observability producers on the user-laptop runtime and robot MCP process.
+3. Trigger exactly one action, for example `rotate 5 degrees`.
+4. Inspect `/tmp/moretea-observability-state.json`.
+
+Useful extractor command:
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("/tmp/moretea-observability-state.json")
+data = json.loads(p.read_text())
+turn = data["turns"][0]
+print(json.dumps({
+    "tool_executions": turn.get("tool_executions", []),
+    "timeline_events": turn.get("timeline_events", []),
+    "session_structure": turn.get("session_structure", {}),
+}, indent=2))
+PY
+```
+
+Expected evidence for a healthy child rotate flow:
+
+- main tool execution: `moretea_robot_health`
+- main tool execution: `sessions_spawn`
+- child session lifecycle events show `spawned`, `running`, then `completed`
+- robot-side `rotate_angle` tool execution is present and correlated to the child session when metadata is available
+- child `sessions_send` reports the final result
+
+If a child reports success without any matching tool execution, the snapshot surfaces `child_session_report_without_tool_result` and marks the child status as `reported_without_tool`.
 
 ## Current v1 limits
 
-- explicit OpenClaw child-session visibility is still inferred unless a producer reports it directly
+- some OpenClaw child-session visibility is still inferred from verbose logs when the runtime does not emit direct events
 - built-in OpenClaw tools are only as visible as the current verbose logs allow; full child-tool result tracing still needs upstream OpenClaw runtime support
 - the dashboard preserves the existing UI shell and focuses on observability, not control
 - browser clients never talk to the three machines directly

@@ -44,7 +44,7 @@ def _truncate_text(value: Any, *, limit: int = 180) -> str:
 
 
 def _tool_status_for_event(event_type: str, status: str, raw: dict[str, Any]) -> str:
-    if event_type in {"tool_error", "child_session_missing_result"}:
+    if event_type in {"tool_error", "child_session_missing_result", "child_session_report_without_tool_result"}:
         return "error"
     if raw.get("error"):
         return "error"
@@ -273,7 +273,16 @@ class ObservabilityStore:
                 personalization.setdefault("memory_activity", []).append(activity)
         elif event_type == "session_activity":
             self._apply_session_event_locked(turn, event)
-        elif event_type in {"sessions_spawn", "sessions_send", "child_session_missing_result"}:
+        elif event_type in {
+            "sessions_spawn",
+            "sessions_send",
+            "child_session_missing_result",
+            "child_session_spawned",
+            "child_session_started",
+            "child_session_completed",
+            "child_session_errored",
+            "child_session_report_without_tool_result",
+        }:
             self._apply_session_event_locked(turn, event)
 
     def _apply_tool_event_locked(self, turn: dict[str, Any], event: dict[str, Any]) -> None:
@@ -378,10 +387,57 @@ class ObservabilityStore:
                 payload["note"] = _truncate_text(raw["message"])
         elif event_type == "child_session_missing_result":
             payload["status"] = "error"
+        elif event_type == "child_session_spawned":
+            payload["status"] = raw.get("status", "spawned")
+        elif event_type == "child_session_started":
+            payload["status"] = raw.get("status", "running")
+        elif event_type == "child_session_completed":
+            payload["status"] = raw.get("status", "completed")
+        elif event_type == "child_session_errored":
+            payload["status"] = raw.get("status", "error")
+        elif event_type == "child_session_report_without_tool_result":
+            payload["status"] = "reported_without_tool"
         if current is None:
             session["child_sessions"].append(payload)
         else:
             current.update({key: value for key, value in payload.items() if value is not None})
+
+        if event_type == "sessions_send":
+            current = next((item for item in session["child_sessions"] if item.get("id") == child_id), None)
+            if current is not None:
+                has_matching_tool = any(
+                    tool.get("session_id") == child_id
+                    or tool.get("child_session_id") == child_id
+                    or tool.get("parent_session_id") == child_id
+                    for tool in turn.get("tool_executions", [])
+                )
+                if not has_matching_tool:
+                    current["status"] = "reported_without_tool"
+                    warning_id = f"{child_id}-reported-without-tool"
+                    existing = next(
+                        (item for item in turn.get("timeline_events", []) if item.get("id") == warning_id),
+                        None,
+                    )
+                    if existing is None:
+                        warning_event = {
+                            "id": warning_id,
+                            "turn_id": turn.get("id"),
+                            "machine_id": event.get("machine_id"),
+                            "service_id": event.get("service_id"),
+                            "type": "child_session_report_without_tool_result",
+                            "status": "error",
+                            "timestamp": event.get("timestamp"),
+                            "latency_ms": None,
+                            "payload_summary": f"Child session {child_id} reported back without a matching tool result.",
+                            "raw": {
+                                "child_session_id": child_id,
+                                "parent_session_id": current.get("parent_session_id"),
+                                "status": "reported_without_tool",
+                                "message": raw.get("message"),
+                            },
+                        }
+                        turn.setdefault("timeline_events", []).append(warning_event)
+                        turn["timeline_events"] = sorted(turn["timeline_events"], key=_timeline_sort_key)[-MAX_TIMELINE_EVENTS:]
 
     def _refresh_state_locked(self) -> None:
         turns = _sorted_turns(self._turn_index)

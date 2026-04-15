@@ -343,6 +343,71 @@ In the current Humble setup it is acceptable to also see:
 
 That means the server is using the temporary startup bypass and real navigation truth is checked at goal time.
 
+## Observability Debugging
+
+For failed motion or navigation child actions, the observability aggregator is the required debug path.
+
+Start the aggregator:
+
+```bash
+cd /home/frentzen/FYP/moretea-observability-ui
+uv sync
+uv run python backend.py
+```
+
+Then enable producers:
+
+User-laptop / voice runtime:
+
+```bash
+export MORETEA_OBSERVABILITY_ENABLED=1
+export MORETEA_OBSERVABILITY_BASE_URL=http://127.0.0.1:4173
+export MORETEA_OBSERVABILITY_MACHINE_ID=user-laptop
+```
+
+Robot MCP:
+
+```bash
+export MORETEA_OBSERVABILITY_ENABLED=1
+export MORETEA_OBSERVABILITY_BASE_URL=http://127.0.0.1:4173
+export MORETEA_OBSERVABILITY_MACHINE_ID=robot-pc
+export MORETEA_OBSERVABILITY_ROBOT_SNAPSHOT_INTERVAL_S=2
+```
+
+Optional OpenClaw PC reporter:
+
+```bash
+cd /home/frentzen/FYP/moretea-observability-ui
+MORETEA_OBSERVABILITY_BASE_URL=http://127.0.0.1:4173 python3 openclaw_pc_reporter.py
+```
+
+After reproducing one failed action such as `rotate 5 degrees`, inspect:
+
+```bash
+python3 - <<'PY'
+import json
+from pathlib import Path
+p = Path("/tmp/moretea-observability-state.json")
+data = json.loads(p.read_text())
+turn = data["turns"][0]
+print(json.dumps({
+    "tool_executions": turn.get("tool_executions", []),
+    "timeline_events": turn.get("timeline_events", []),
+    "session_structure": turn.get("session_structure", {}),
+}, indent=2))
+PY
+```
+
+The expected chain for a healthy child rotate flow is:
+
+- main `moretea_robot_health`
+- main `sessions_spawn`
+- child lifecycle: `spawned` -> `running` -> `completed`
+- robot-side `rotate_angle` tool execution
+- child `sessions_send`
+
+If the child reports success without any matching tool result, the snapshot should show `child_session_report_without_tool_result`.
+
 ## Current Tool Checks
 
 Robot motion:
@@ -385,6 +450,13 @@ Robot motion pattern (mandatory for OpenClaw):
 5. child agent calls `sessions_send(...)` exactly once with the terminal result
 
 Never call `move_distance` or `rotate_angle` from the main interactive turn.
+
+Containerized OpenClaw CLI tracing:
+
+```bash
+cd /home/frentzen/FYP/moretea-observability-ui
+python3 openclaw_trace_cli.py -- docker exec moretea-openclaw openclaw agent --local --session-id main --verbose on --message "rotate 5 degrees" --json
+```
 
 ## Troubleshooting
 
