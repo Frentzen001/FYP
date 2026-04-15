@@ -317,8 +317,8 @@ docker compose restart rosclaw-isolated
 
 Key config facts:
 - Tools must be in the `tools.allow` list in `openclaw.json` to be callable
-- `moretea_robot_navigate_to_stop` is removed — do not re-add it (blocked the HTTP connection)
-- `moretea_robot_wait_for_navigation_action` is the replacement — event-driven, max 25s per call
+- Blocking physical actions are child-only: the main agent spawns a child session, and the child calls exactly one action tool plus `sessions_send`
+- The canonical navigation action is `moretea_robot_navigate_to_stop`
 
 ---
 
@@ -361,29 +361,30 @@ Robot emotion:
 Robot navigation:
 
 - `list_tour_stops()`
-- `start_navigation_to_stop("fabrication_lab")` — returns immediately with `action_id`
-- `wait_for_navigation_action(action_id, max_wait_s=90)` — polls up to 90 s; returns early on reroute/recovery events or timeout
-- `get_navigation_action_status(action_id)` — one-shot status snapshot without blocking
+- `navigate_to_stop("fabrication_lab")` — child-only blocking tool; returns a terminal result
 - `cancel_navigation()`
-- `get_navigation_status()`
+- `get_navigation_status()` — optional status/debug snapshot
 
 Navigation pattern (mandatory for OpenClaw):
 
-1. call `start_navigation_to_stop` → get `action_id`
-2. tell the visitor you are heading there (≤10 words)
-3. call `wait_for_navigation_action(action_id, max_wait_s=10)` — ONE call per turn:
-   - `event="replan"` → speak `last_event_note` in ≤8 words, end turn
-   - `event="recovery"` → speak `last_event_note` in ≤8 words, end turn
-   - `timed_out=True` → give a short distance update, end turn
-   - `event=None, timed_out=False` → navigation finished, report outcome, end turn
-4. if visitor asks a question mid-navigation: call `get_navigation_action_status` (instant), answer, end turn — do NOT call `wait_for_navigation_action` unless they ask for a navigation update
+1. main agent calls `list_tour_stops()`
+2. main agent acknowledges the destination in one short sentence
+3. main agent calls `sessions_spawn(...)`
+4. child agent calls `navigate_to_stop(stop_id)` exactly once
+5. child agent calls `sessions_send(...)` exactly once with the terminal result
+6. if a visitor asks for a progress update mid-navigation, call `get_navigation_status()` and answer briefly
 
-Each turn ends after one wait call. Navigation continues in the background. This prevents LiveKit turn timeouts.
+Do not manage `action_id`, prompt-level polling, replan handling, or retry loops in OpenClaw prompt logic.
 
-The `last_event_note` strings are already human-readable and suitable to speak directly.
-Each poll cycle is 50 ms, so reroute events are surfaced within ~50 ms of occurring.
+Robot motion pattern (mandatory for OpenClaw):
 
-Note: `navigate_to_stop` is no longer exposed as an MCP tool — it blocked the HTTP connection for the full navigation duration and caused timeouts. The previous unlimited wait loop had the same problem and is now replaced with one wait call per turn.
+1. main agent calls `health()`
+2. if `motion_confirmable` is false, refuse motion
+3. otherwise main agent calls `sessions_spawn(...)`
+4. child agent calls either `move_distance(...)` or `rotate_angle(...)` exactly once
+5. child agent calls `sessions_send(...)` exactly once with the terminal result
+
+Never call `move_distance` or `rotate_angle` from the main interactive turn.
 
 ## Troubleshooting
 
@@ -408,7 +409,7 @@ Check in this order:
    - `navigation_ready: true`
    - `tour_navigation.nav2_import_ready: true`
 
-If `nav2_active_check_bypassed` is `true`, do a short real `start_navigation_to_stop` test next.
+If `nav2_active_check_bypassed` is `true`, do a short real `navigate_to_stop` test next from a child session.
 
 ### Non-loopback bind is rejected
 

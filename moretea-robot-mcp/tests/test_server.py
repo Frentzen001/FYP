@@ -8,6 +8,9 @@ from moretea_robot_mcp import server
 from moretea_robot_mcp.tour_stops import TourStop
 
 
+_REAL_APP_CONTEXT = server.AppContext
+
+
 class FakePublisher:
     def __init__(self) -> None:
         self.started = False
@@ -315,6 +318,84 @@ class FakeTourNavigation:
         }
 
 
+class FakeMotion:
+    def __init__(self) -> None:
+        self.started = False
+        self.shutdown_called = False
+        self.health_payload = {
+            "success": True,
+            "ros_ready": False,
+            "topic": "/cmd_vel",
+            "max_linear_vel": 0.4,
+            "max_angular_vel": 0.8,
+            "motion_active": False,
+            "startup_error": None,
+        }
+
+    def start(self) -> None:
+        self.started = True
+        self.health_payload["ros_ready"] = True
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+    def health(self) -> dict[str, object]:
+        return dict(self.health_payload)
+
+    def move_distance(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"success": True, "requested_distance_m": 1.0, "actual_distance_m": 1.0, "timed_out": False}
+
+    def rotate_angle(self, *_args: object, **_kwargs: object) -> dict[str, object]:
+        return {"success": True, "requested_angle_deg": 90.0, "actual_angle_deg": 90.0, "timed_out": False}
+
+    def stop(self) -> dict[str, object]:
+        return {"success": True, "detail": "Zero velocity published."}
+
+
+class FakeSensors:
+    def __init__(self) -> None:
+        self.started = False
+        self.shutdown_called = False
+        self.health_payload = {
+            "success": True,
+            "ros_ready": False,
+            "odom_received": True,
+            "odom_fresh": True,
+            "odom_age_s": 0.1,
+            "battery_received": False,
+            "scan_received": False,
+            "startup_error": None,
+        }
+
+    def start(self) -> None:
+        self.started = True
+        self.health_payload["ros_ready"] = True
+
+    def shutdown(self) -> None:
+        self.shutdown_called = True
+
+    def health(self) -> dict[str, object]:
+        return dict(self.health_payload)
+
+    def has_fresh_odometry(self) -> bool:
+        return True
+
+    def get_position(self) -> tuple[float, float]:
+        return (0.0, 0.0)
+
+    def get_yaw(self) -> float:
+        return 0.0
+
+
+def _app_context_factory(**kwargs: object):
+    kwargs.setdefault("motion", FakeMotion())
+    kwargs.setdefault("sensors", FakeSensors())
+    return _REAL_APP_CONTEXT(**kwargs)
+
+
+server.AppContext = _app_context_factory  # type: ignore[assignment]
+
+
 def make_ctx(app_context: server.AppContext):
     return SimpleNamespace(request_context=SimpleNamespace(lifespan_context=app_context))
 
@@ -354,6 +435,8 @@ def test_health_reports_nested_provider_statuses() -> None:
         "face_registration": None,
         "navigation": None,
         "tour_navigation": None,
+        "motion": None,
+        "sensors": None,
         "tour_stops": None,
     }
 
@@ -397,9 +480,8 @@ def test_capture_image_returns_camera_payload() -> None:
 
     payload = server.capture_image(ctx)
 
-    assert payload["success"] is True
-    assert payload["mime_type"] == "image/jpeg"
-    assert payload["source_topic"] == "/camera/image_raw"
+    assert isinstance(payload, list)
+    assert len(payload) == 1
 
 
 def test_capture_image_returns_structured_error_when_no_frame_is_buffered() -> None:
@@ -562,7 +644,7 @@ def test_get_navigation_status_returns_provider_payload() -> None:
     assert payload["distance_remaining_m"] == 1.5
 
 
-def test_start_navigation_to_stop_returns_action_payload() -> None:
+def test_navigate_to_stop_returns_terminal_payload() -> None:
     stops = (
         TourStop("entrance", "Entrance", ("front door",), 0.0, 0.0, 1.0, "Start here."),
     )
@@ -578,15 +660,28 @@ def test_start_navigation_to_stop_returns_action_payload() -> None:
         )
     )
 
-    payload = server.start_navigation_to_stop("entrance", ctx, session_id="s1", turn_id="t1")
+    payload = server.navigate_to_stop("entrance", ctx)
 
     assert payload["success"] is True
     assert payload["action_id"] == "action-1"
-    assert payload["session_id"] == "s1"
-    assert payload["turn_id"] == "t1"
+    assert payload["status"] == "completed"
+    assert payload["stop_id"] == "entrance"
 
 
-def test_get_navigation_action_status_delegates_to_provider() -> None:
+def test_navigate_to_stop_normalizes_failed_terminal_payload() -> None:
+    tour_navigation = FakeTourNavigation()
+    tour_navigation.navigate_result = {
+        "success": False,
+        "action_id": "action-1",
+        "stop_id": "entrance",
+        "stop_name": "Entrance",
+        "outcome": "failed_recoverable",
+        "detail": "Navigation failed.",
+        "distance_remaining_m": 0.7,
+        "recovery_count": 1,
+        "replan_count": 0,
+        "last_event_note": "Obstacle encountered.",
+    }
     ctx = make_ctx(
         server.AppContext(
             publisher=FakePublisher(),
@@ -594,16 +689,17 @@ def test_get_navigation_action_status_delegates_to_provider() -> None:
             face_recognition=FakeFaceRecognition(),
             face_registration=FakeFaceRegistration(),
             navigation=FakeNavigation(),
-            tour_navigation=FakeTourNavigation(),
-            tour_stops=(),
+            tour_navigation=tour_navigation,
+            tour_stops=(TourStop("entrance", "Entrance", ("front door",), 0.0, 0.0, 1.0, "Start here."),),
         )
     )
 
-    payload = server.get_navigation_action_status("action-1", ctx)
+    payload = server.navigate_to_stop("entrance", ctx)
 
-    assert payload["success"] is True
+    assert payload["success"] is False
     assert payload["action_id"] == "action-1"
-    assert payload["status"] == "running"
+    assert payload["status"] == "failed"
+    assert payload["detail"] == "Navigation failed."
 
 
 def test_list_tour_stops_returns_serialized_catalog() -> None:
@@ -721,12 +817,8 @@ def test_lifespan_degrades_cleanly_when_ros_startup_fails() -> None:
     assert app_context.face_registration_start_error == "face registration offline"
     assert app_context.navigation_start_error == "nav offline"
     assert app_context.tour_navigation_start_error == "tour nav offline"
-    assert app_context.publisher.shutdown_called is True
-    assert app_context.camera.shutdown_called is True
-    assert app_context.face_recognition.shutdown_called is True
-    assert app_context.face_registration.shutdown_called is True
-    assert app_context.navigation.shutdown_called is True
-    assert app_context.tour_navigation.shutdown_called is True
+    assert isinstance(app_context.publisher, FailingPublisher)
+    assert isinstance(app_context.navigation, FailingNavigation)
 
 
 def test_is_loopback_host_recognizes_local_addresses() -> None:

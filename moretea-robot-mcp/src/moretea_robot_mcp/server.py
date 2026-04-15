@@ -423,16 +423,15 @@ mcp = FastMCP(
         "Use list_tour_stops to inspect known tour locations, get_navigation_status to inspect Nav2 state, cancel_navigation to halt navigation. "
         "NAVIGATION (mandatory — subagent pattern only): "
         "Never call navigate_to_stop from the main interactive turn. Always spawn a background subagent via sessions_spawn and delegate navigation to it. "
-        "The subagent calls navigate_to_stop(stop_id) to start navigation, then calls navigate_to_stop(stop_id, action_id=...) to resume after each return. "
-        "On event='replan' or 'recovery': speak last_event_note to the user via sessions_send, then call navigate_to_stop again with the same action_id. "
-        "On timed_out=True: call navigate_to_stop again silently with the same action_id (no user message needed). "
-        "On terminal status (completed/failed/cancelled): announce the outcome, done. "
+        "The subagent calls navigate_to_stop(stop_id) exactly once and waits for the terminal result. "
+        "Do not manage action_id state, polling loops, replan handling, or retries in prompt logic. "
+        "When the tool returns, report the final outcome to the main session via sessions_send. "
         "MOTION (mandatory — subagent pattern only): "
         "Call health before any motion request and refuse motion when motion_confirmable is false. "
         "Never call move_distance or rotate_angle from the main interactive turn — they block for up to 10 s. "
         "Always spawn a background subagent via sessions_spawn. "
-        "The subagent calls move_distance(distance_m=...) for translation or rotate_angle(angle_deg=...) for rotation — "
-        "each blocks until complete, then reports the outcome to the main session via sessions_send. "
+        "The subagent calls move_distance(distance_m=...) for translation or rotate_angle(angle_deg=...) for rotation exactly once. "
+        "Each blocks until complete, then reports the outcome to the main session via sessions_send. "
         "stop_motion may be called directly from the main turn for emergency stops."
     ),
     stateless_http=True,
@@ -445,6 +444,37 @@ def _error_payload(message: str, **fields: object) -> dict[str, object]:
     payload: dict[str, object] = {"success": False, "error": message}
     payload.update(fields)
     return payload
+
+
+def _normalize_navigation_result(payload: dict[str, object]) -> dict[str, object]:
+    status = payload.get("status")
+    if not isinstance(status, str) or not status:
+        outcome = str(payload.get("outcome") or "")
+        if outcome == "succeeded":
+            status = "completed"
+        elif outcome == "canceled":
+            status = "cancelled"
+        else:
+            status = "failed"
+    normalized = dict(payload)
+    normalized["status"] = status
+    normalized.setdefault("timed_out", status == "timed_out")
+    return normalized
+
+
+def _normalize_motion_result(payload: dict[str, object], *, action: str) -> dict[str, object]:
+    normalized = dict(payload)
+    status = "completed" if payload.get("success") else "failed"
+    normalized.setdefault("status", status)
+    detail = payload.get("detail")
+    if not isinstance(detail, str) or not detail:
+        if payload.get("success"):
+            detail = f"{action.capitalize()} completed."
+        else:
+            detail = str(payload.get("error") or f"{action.capitalize()} failed.")
+        normalized["detail"] = detail
+    normalized.setdefault("timed_out", False)
+    return normalized
 
 
 @mcp.tool()
@@ -686,125 +716,39 @@ def list_tour_stops(ctx: Context[ServerSession, AppContext]) -> dict[str, object
     return result
 
 
-_TERMINAL_STATUSES = frozenset({"completed", "failed", "cancelled", "timed_out"})
-_NAV_STEP_CAP_S = 120.0  # 2 min — SSH loopback has no gateway timeout constraint
-_NAV_POLL_S = 0.05
-
-
 @mcp.tool()
 def navigate_to_stop(
     stop_id: str,
     ctx: Context[ServerSession, AppContext],
-    action_id: str | None = None,
-    max_wait_s: float = 20.0,
 ) -> dict[str, object]:
-    """Navigate to a named tour stop. Blocks until an event occurs or navigation terminates.
-
-    First call: provide stop_id only — starts navigation, waits for the first event or terminal.
-    Subsequent calls: provide the same stop_id AND the action_id from the previous response —
-    resumes waiting for the in-progress navigation.
-
-    Returns {action_id, status, event, timed_out, last_event_note, distance_remaining_m, ...}:
-      event='replan':    robot rerouted — speak last_event_note via sessions_send, call navigate_to_stop(stop_id, action_id=...) again.
-      event='recovery':  robot recovering — speak last_event_note via sessions_send, call navigate_to_stop(stop_id, action_id=...) again.
-      timed_out=True:    still navigating, no event — call navigate_to_stop(stop_id, action_id=...) again silently.
-      terminal status (completed/failed/cancelled): report outcome, done.
-
-    max_wait_s: max seconds to block per call. Capped at 120s (2 min).
-    """
+    """Navigate to a named tour stop and block until a terminal outcome is available."""
     lifespan = ctx.request_context.lifespan_context
     tour_navigation = lifespan.tour_navigation
     execution_id = lifespan.observability.next_tool_execution_id("navigate_to_stop") if lifespan.observability else "navigate_to_stop"
     started_at = time.perf_counter()
-    session_id = None
-    turn_id = None
     _emit_tool_started(
         lifespan,
         tool_name="navigate_to_stop",
         execution_id=execution_id,
         summary=f"Navigation requested for stop `{stop_id}`.",
-        turn_id=turn_id,
-        session_id=session_id,
-        args_summary=_summarize_args(stop_id=stop_id, action_id=action_id, max_wait_s=max_wait_s),
+        args_summary=_summarize_args(stop_id=stop_id),
     )
 
-    if action_id is None:
-        # Start new navigation
-        target = next((s for s in lifespan.tour_stops if s.id == stop_id.strip()), None)
-        if target is None:
-            result = _error_payload(
-                f"Unknown stop_id '{stop_id}'.",
-                stop_id=stop_id,
-                available_stop_ids=[s.id for s in lifespan.tour_stops],
-            )
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, started_at=started_at)
-            return result
-        started = tour_navigation.start_navigation_to_stop(target)
-        if not started.get("success"):
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=started, started_at=started_at)
-            return started
-        action_id = started["action_id"]
-        session_id = started.get("session_id")
-        turn_id = started.get("turn_id")
-
-    capped = min(float(max_wait_s), _NAV_STEP_CAP_S)
-    deadline = time.monotonic() + capped
-
-    # Establish baseline event counts before polling.
-    baseline = tour_navigation.get_navigation_action_status(action_id)
-    if not baseline.get("success"):
-        result = {**baseline, "action_id": action_id}
-        _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
+    target = next((s for s in lifespan.tour_stops if s.id == stop_id.strip()), None)
+    if target is None:
+        result = _error_payload(
+            f"Unknown stop_id '{stop_id}'.",
+            stop_id=stop_id,
+            available_stop_ids=[s.id for s in lifespan.tour_stops],
+            status="failed",
+            timed_out=False,
+        )
+        _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, started_at=started_at)
         return result
-    baseline_replan: int = baseline.get("replan_count", 0) or 0
-    baseline_recovery: int = baseline.get("recovery_count", 0) or 0
 
-    def _result(snap: dict[str, object], *, timed_out: bool, event: str | None) -> dict[str, object]:
-        return {
-            "success": True,
-            "action_id": action_id,
-            "stop_id": snap.get("stop_id") or stop_id,
-            "stop_name": snap.get("stop_name"),
-            "status": snap.get("status"),
-            "event": event,
-            "timed_out": timed_out,
-            "distance_remaining_m": snap.get("distance_remaining_m"),
-            "last_event_note": snap.get("last_event_note"),
-            "detail": snap.get("detail"),
-        }
-
-    while True:
-        snap = tour_navigation.get_navigation_action_status(action_id)
-        if not snap.get("success"):
-            result = {**snap, "action_id": action_id, "timed_out": False, "event": None}
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
-            return result
-
-        status = snap.get("status")
-        # Terminal check first — completion beats any concurrent event.
-        if status in _TERMINAL_STATUSES:
-            result = _result(snap, timed_out=False, event=None)
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
-            return result
-
-        # Event checks — return early so the subagent can send a reassurance via sessions_send.
-        cur_replan: int = snap.get("replan_count", 0) or 0
-        cur_recovery: int = snap.get("recovery_count", 0) or 0
-        if cur_replan > baseline_replan:
-            result = _result(snap, timed_out=False, event="replan")
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
-            return result
-        if cur_recovery > baseline_recovery:
-            result = _result(snap, timed_out=False, event="recovery")
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
-            return result
-
-        if time.monotonic() >= deadline:
-            result = _result(snap, timed_out=True, event=None)
-            _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, turn_id=turn_id, session_id=session_id, started_at=started_at)
-            return result
-
-        time.sleep(_NAV_POLL_S)
+    result = _normalize_navigation_result(tour_navigation.navigate_to_stop(target))
+    _emit_tool_finished(lifespan, tool_name="navigate_to_stop", execution_id=execution_id, result=result, started_at=started_at)
+    return result
 
 
 @mcp.tool()
@@ -859,15 +803,18 @@ def move_distance(
         pos_fn = None
         if app.sensors is not None:
             pos_fn = app.sensors.get_position
-        result = app.motion.move_distance(
-            distance_m=distance_m,
-            speed_m_s=speed_m_s,
-            pos_fn=pos_fn,
-            allow_open_loop=allow_open_loop,
-            feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
+        result = _normalize_motion_result(
+            app.motion.move_distance(
+                distance_m=distance_m,
+                speed_m_s=speed_m_s,
+                pos_fn=pos_fn,
+                allow_open_loop=allow_open_loop,
+                feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
+            ),
+            action="translation",
         )
     except RuntimeError as exc:
-        result = _error_payload(str(exc))
+        result = _normalize_motion_result(_error_payload(str(exc)), action="translation")
     _emit_tool_finished(lifespan, tool_name="move_distance", execution_id=execution_id, result=result, started_at=started_at)
     return result
 
@@ -912,15 +859,18 @@ def rotate_angle(
         yaw_fn = None
         if app.sensors is not None:
             yaw_fn = app.sensors.get_yaw
-        result = app.motion.rotate_angle(
-            angle_deg=angle_deg,
-            speed_rad_s=speed_rad_s,
-            yaw_fn=yaw_fn,
-            allow_open_loop=allow_open_loop,
-            feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
+        result = _normalize_motion_result(
+            app.motion.rotate_angle(
+                angle_deg=angle_deg,
+                speed_rad_s=speed_rad_s,
+                yaw_fn=yaw_fn,
+                allow_open_loop=allow_open_loop,
+                feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
+            ),
+            action="rotation",
         )
     except RuntimeError as exc:
-        result = _error_payload(str(exc))
+        result = _normalize_motion_result(_error_payload(str(exc)), action="rotation")
     _emit_tool_finished(lifespan, tool_name="rotate_angle", execution_id=execution_id, result=result, started_at=started_at)
     return result
 
