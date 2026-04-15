@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ipaddress
+import json as _json
 import os
 import threading
 import time
@@ -1208,6 +1209,16 @@ def build_streamable_http_app() -> ASGIApp:
     probe_headers = {"Allow": "GET, POST, DELETE, OPTIONS, HEAD"}
 
     async def app(scope: Scope, receive: Receive, send: Send) -> None:
+        if scope["type"] == "http" and scope.get("path") == "/face":
+            name: str | None = None
+            ctx = _ctx_singleton
+            if ctx is not None:
+                faces = ctx.face_recognition.get_recognized_faces().get("faces", [])
+                if faces:
+                    name = str(faces[0].get("name", "")).strip() or None
+            body = _json.dumps({"name": name}).encode()
+            await Response(content=body, media_type="application/json")(scope, receive, send)
+            return
         if scope["type"] == "http" and scope.get("path") == streamable_http_path:
             method = str(scope.get("method", "")).upper()
             if method == "OPTIONS":
