@@ -11,7 +11,8 @@ from dataclasses import dataclass
 from datetime import datetime, timezone
 
 import uvicorn
-from starlette.responses import Response
+from starlette.requests import Request
+from starlette.responses import JSONResponse, Response
 from starlette.types import ASGIApp, Receive, Scope, Send
 from uuid import uuid4
 
@@ -62,6 +63,7 @@ class AppContext:
     motion: RobotMotionProvider
     sensors: RobotSensorProvider
     tour_stops: tuple[TourStop, ...]
+    motion_tasks: MotionTaskTracker = None  # type: ignore[assignment]
     observability: RobotObservabilityReporter | None = None
     publisher_start_error: str | None = None
     camera_start_error: str | None = None
@@ -79,6 +81,52 @@ _ctx_singleton_lock = threading.Lock()
 DEDUP_TTL_S = 30.0
 _motion_dedup_cache: dict[str, tuple[dict[str, object], float]] = {}
 _motion_dedup_lock = threading.Lock()
+
+
+@dataclass
+class _MotionTask:
+    task_id: str
+    tool_name: str       # "move_distance" | "rotate_angle"
+    args_summary: str
+    status: str          # "running" | "completed" | "failed" | "timed_out"
+    result: dict[str, object] | None = None
+
+
+class MotionTaskTracker:
+    """Thread-safe registry of in-flight and recently-completed motion tasks."""
+
+    def __init__(self) -> None:
+        self._tasks: dict[str, _MotionTask] = {}
+        self._lock = threading.Lock()
+
+    def register(self, task_id: str, tool_name: str, args_summary: str) -> None:
+        with self._lock:
+            self._tasks[task_id] = _MotionTask(task_id, tool_name, args_summary, "running")
+
+    def complete(self, task_id: str, result: dict[str, object]) -> None:
+        with self._lock:
+            if task_id in self._tasks:
+                if result.get("timed_out"):
+                    status = "timed_out"
+                elif result.get("success"):
+                    status = "completed"
+                else:
+                    status = "failed"
+                self._tasks[task_id].status = status
+                self._tasks[task_id].result = result
+
+    def get_all(self) -> list[dict[str, object]]:
+        with self._lock:
+            return [
+                {
+                    "task_id": t.task_id,
+                    "tool_name": t.tool_name,
+                    "args_summary": t.args_summary,
+                    "status": t.status,
+                    "result": t.result,
+                }
+                for t in self._tasks.values()
+            ]
 
 
 def _utc_now() -> str:
@@ -479,6 +527,7 @@ def _build_app_context() -> AppContext:
         motion=motion,
         sensors=sensors,
         tour_stops=tour_stops,
+        motion_tasks=MotionTaskTracker(),
         observability=observability,
         publisher_start_error=publisher_start_error,
         camera_start_error=camera_start_error,
@@ -521,18 +570,33 @@ mcp = FastMCP(
         "Use capture_image to fetch the latest buffered camera frame. "
         "Use get_recognized_faces to inspect the latest face-recognition snapshot, register_face to save a newly met person. "
         "Use list_tour_stops to inspect known tour locations, get_navigation_status to inspect Nav2 state, cancel_navigation to halt navigation. "
-        "NAVIGATION: Call navigate_to_stop(stop_id) directly from the main session. "
-        "It blocks until a terminal outcome is reached — do not manage polling, retries, or action IDs in prompt logic. "
-        "Report the final status and detail fields from the result. "
+        "NAVIGATION: Call navigate_to_stop(stop_id) to begin navigation. "
+        "It returns immediately with status=goal_accepted — do not wait, poll, or manage action IDs. "
+        "Acknowledge naturally ('I am on my way!'). The robot announces arrival automatically. "
         "Call cancel_navigation to abort. Call stop_motion for an emergency stop. "
         "MOTION: Call health before any motion request and refuse if motion_confirmable is false. "
-        "Call move_distance(distance_m=...) for translation or rotate_angle(angle_deg=...) for rotation directly. "
-        "Each blocks until complete. Report actual distance/angle from the result payload, not the requested value."
+        "Call move_distance(distance_m=...) for translation or rotate_angle(angle_deg=...) for rotation. "
+        "Both return immediately with status=started. The robot announces completion automatically. "
+        "Report what was requested — actual values come in the completion announcement."
     ),
     stateless_http=True,
     json_response=True,
     lifespan=app_lifespan,
 )
+
+
+@mcp.custom_route("/robot/status", methods=["GET"])
+async def robot_status_endpoint(request: Request) -> JSONResponse:
+    """Lightweight polling endpoint for the LiveKit agent task monitor."""
+    nav: dict[str, object] = {}
+    motion: list[dict[str, object]] = []
+    ctx = _ctx_singleton
+    if ctx is not None:
+        if ctx.tour_navigation is not None:
+            nav = ctx.tour_navigation.current_status()
+        if ctx.motion_tasks is not None:
+            motion = ctx.motion_tasks.get_all()
+    return JSONResponse({"navigation": nav, "motion_tasks": motion})
 
 
 def _error_payload(message: str, **fields: object) -> dict[str, object]:
@@ -816,7 +880,12 @@ def navigate_to_stop(
     stop_id: str,
     ctx: Context[ServerSession, AppContext],
 ) -> dict[str, object]:
-    """Navigate to a named tour stop and block until a terminal outcome is available."""
+    """Send a navigation goal to a named tour stop and return immediately once accepted.
+
+    Returns status=goal_accepted as soon as Nav2 accepts the goal.
+    The robot announces arrival or failure automatically — do not poll or wait.
+    Call cancel_navigation to abort an active navigation.
+    """
     lifespan = ctx.request_context.lifespan_context
     tour_navigation = lifespan.tour_navigation
     correlation = _request_correlation(ctx)
@@ -854,7 +923,18 @@ def navigate_to_stop(
         )
         return result
 
-    result = _normalize_navigation_result(tour_navigation.navigate_to_stop(target))
+    start_payload = tour_navigation.start_navigation_to_stop(target)
+    if not start_payload.get("success"):
+        result = _normalize_navigation_result(start_payload)
+    else:
+        result = {
+            "status": "goal_accepted",
+            "action_id": start_payload.get("action_id"),
+            "stop_id": target.id,
+            "stop_name": target.name,
+            "detail": "Navigation goal accepted. Robot is on its way.",
+            "success": True,
+        }
     _emit_tool_finished(
         lifespan,
         tool_name="navigate_to_stop",
@@ -909,14 +989,13 @@ def move_distance(
     speed_m_s: float = 0.15,
     allow_open_loop: bool = False,
 ) -> dict[str, object]:
-    """Move the robot forward or backward a fixed distance.
+    """Start moving the robot forward or backward a fixed distance. Returns immediately once started.
 
     distance_m: metres to travel. Positive = forward, negative = backward.
     speed_m_s: travel speed in m/s. Defaults to 0.15 m/s. Clamped to 0.4 m/s.
     Uses closed-loop odometry feedback when available (accurate to ~2 cm).
     Refuses unconfirmed open-loop motion unless allow_open_loop=True.
-    Returns: success, mode (closed_loop|open_loop_override), requested_distance_m,
-             actual_distance_m (closed_loop only), timed_out.
+    Returns status=started immediately. The robot announces completion automatically.
     """
     lifespan = ctx.request_context.lifespan_context
     correlation = _request_correlation(ctx)
@@ -953,34 +1032,56 @@ def move_distance(
             started_at=started_at,
         )
         return result
-    try:
-        app = lifespan
-        pos_fn = None
-        if app.sensors is not None:
-            pos_fn = app.sensors.get_position
-        result = _normalize_motion_result(
-            app.motion.move_distance(
-                distance_m=distance_m,
-                speed_m_s=speed_m_s,
-                pos_fn=pos_fn,
-                allow_open_loop=allow_open_loop,
-                feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
-            ),
-            action="translation",
+    app = lifespan
+    pos_fn = app.sensors.get_position if app.sensors is not None else None
+    feedback_fn = app.sensors.has_fresh_odometry if app.sensors is not None else None
+
+    task_id = f"motion_move_{uuid4().hex[:8]}"
+    app.motion_tasks.register(task_id, "move_distance", f"{distance_m}m @ {speed_m_s}m/s")
+
+    # Capture values for the background thread (avoid closure over mutable locals)
+    _lifespan = lifespan
+    _execution_id = execution_id
+    _started_at = started_at
+    _dedup_key = dedup_key
+    _correlation = dict(correlation)
+
+    def _run_move() -> None:
+        try:
+            r = _normalize_motion_result(
+                app.motion.move_distance(
+                    distance_m=distance_m,
+                    speed_m_s=speed_m_s,
+                    pos_fn=pos_fn,
+                    allow_open_loop=allow_open_loop,
+                    feedback_available_fn=feedback_fn,
+                ),
+                action="translation",
+            )
+        except RuntimeError as exc:
+            r = _normalize_motion_result(_error_payload(str(exc)), action="translation")
+        _store_motion_dedup(_dedup_key, r)
+        _lifespan.motion_tasks.complete(task_id, r)
+        _emit_tool_finished(
+            _lifespan,
+            tool_name="move_distance",
+            execution_id=_execution_id,
+            result=r,
+            turn_id=_correlation["turn_id"],
+            session_id=_correlation["session_id"],
+            parent_session_id=_correlation["parent_session_id"],
+            started_at=_started_at,
         )
-    except RuntimeError as exc:
-        result = _normalize_motion_result(_error_payload(str(exc)), action="translation")
-    _store_motion_dedup(dedup_key, result)
-    _emit_tool_finished(
-        lifespan,
-        tool_name="move_distance",
-        execution_id=execution_id,
-        result=result,
-        turn_id=correlation["turn_id"],
-        session_id=correlation["session_id"],
-        parent_session_id=correlation["parent_session_id"],
-        started_at=started_at,
-    )
+
+    threading.Thread(target=_run_move, daemon=True, name=f"moretea_move_{task_id}").start()
+
+    result = {
+        "status": "started",
+        "task_id": task_id,
+        "distance_m": distance_m,
+        "detail": "Move started. Robot will confirm when complete.",
+        "success": True,
+    }
     return result
 
 
@@ -991,7 +1092,7 @@ def rotate_angle(
     speed_rad_s: float = 0.4,
     allow_open_loop: bool = False,
 ) -> dict[str, object]:
-    """Rotate the robot in place by an exact number of degrees.
+    """Start rotating the robot in place by an exact number of degrees. Returns immediately once started.
 
     Use this tool whenever the user asks to turn, rotate, spin, or face a
     different direction by a specific angle. Do NOT use move() with angular_z
@@ -1006,8 +1107,7 @@ def rotate_angle(
 
     Uses closed-loop odometry feedback when available (accurate to ~3°).
     Refuses unconfirmed open-loop rotation unless allow_open_loop=True.
-    Returns: success, mode (closed_loop|open_loop_override), requested_angle_deg,
-             actual_angle_deg (closed_loop only), timed_out.
+    Returns status=started immediately. The robot announces completion automatically.
     """
     lifespan = ctx.request_context.lifespan_context
     correlation = _request_correlation(ctx)
@@ -1044,34 +1144,55 @@ def rotate_angle(
             started_at=started_at,
         )
         return result
-    try:
-        app = lifespan
-        yaw_fn = None
-        if app.sensors is not None:
-            yaw_fn = app.sensors.get_yaw
-        result = _normalize_motion_result(
-            app.motion.rotate_angle(
-                angle_deg=angle_deg,
-                speed_rad_s=speed_rad_s,
-                yaw_fn=yaw_fn,
-                allow_open_loop=allow_open_loop,
-                feedback_available_fn=app.sensors.has_fresh_odometry if app.sensors is not None else None,
-            ),
-            action="rotation",
+    app = lifespan
+    yaw_fn = app.sensors.get_yaw if app.sensors is not None else None
+    feedback_fn = app.sensors.has_fresh_odometry if app.sensors is not None else None
+
+    task_id = f"motion_rotate_{uuid4().hex[:8]}"
+    app.motion_tasks.register(task_id, "rotate_angle", f"{angle_deg}° @ {speed_rad_s}rad/s")
+
+    _lifespan = lifespan
+    _execution_id = execution_id
+    _started_at = started_at
+    _dedup_key = dedup_key
+    _correlation = dict(correlation)
+
+    def _run_rotate() -> None:
+        try:
+            r = _normalize_motion_result(
+                app.motion.rotate_angle(
+                    angle_deg=angle_deg,
+                    speed_rad_s=speed_rad_s,
+                    yaw_fn=yaw_fn,
+                    allow_open_loop=allow_open_loop,
+                    feedback_available_fn=feedback_fn,
+                ),
+                action="rotation",
+            )
+        except RuntimeError as exc:
+            r = _normalize_motion_result(_error_payload(str(exc)), action="rotation")
+        _store_motion_dedup(_dedup_key, r)
+        _lifespan.motion_tasks.complete(task_id, r)
+        _emit_tool_finished(
+            _lifespan,
+            tool_name="rotate_angle",
+            execution_id=_execution_id,
+            result=r,
+            turn_id=_correlation["turn_id"],
+            session_id=_correlation["session_id"],
+            parent_session_id=_correlation["parent_session_id"],
+            started_at=_started_at,
         )
-    except RuntimeError as exc:
-        result = _normalize_motion_result(_error_payload(str(exc)), action="rotation")
-    _store_motion_dedup(dedup_key, result)
-    _emit_tool_finished(
-        lifespan,
-        tool_name="rotate_angle",
-        execution_id=execution_id,
-        result=result,
-        turn_id=correlation["turn_id"],
-        session_id=correlation["session_id"],
-        parent_session_id=correlation["parent_session_id"],
-        started_at=started_at,
-    )
+
+    threading.Thread(target=_run_rotate, daemon=True, name=f"moretea_rotate_{task_id}").start()
+
+    result = {
+        "status": "started",
+        "task_id": task_id,
+        "angle_deg": angle_deg,
+        "detail": "Rotation started. Robot will confirm when complete.",
+        "success": True,
+    }
     return result
 
 
